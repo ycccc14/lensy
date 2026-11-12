@@ -228,6 +228,15 @@ test('rows: brand split, cycle, cabinet vs wishlist, duplicates', () => {
   assert.deepEqual(ex.map((x) => [x.dest, x.cycle, x.qty]), [['wish', '', 10], ['lens', 'daily', 10]]);
 });
 
+test('append-to-file export', () => {
+  // Shortcut writes "LENSY" first, then appends each block with Make New Line (blank lines, CRLF possible)
+  const img = fs.readFileSync(new URL('./fixtures/lens.jpg', import.meta.url)).toString('base64');
+  const text = 'LENSY\r\n@@ITEM\r\n@@TITLE 拉拜诗 新晋 OL\r\n@@NOTES 月\r\n@@DONE No\r\n\r\n@@IMG ' + img + '\r\n\r\n@@ITEM\n@@TITLE Neo 浪漫蓝调\n@@NOTES \n@@DONE Yes\n\n';
+  const items = parseExport(text);
+  assert.deepEqual(items.map((i) => [i.title, i.notes, i.done, i.images.length]), [['拉拜诗 新晋 OL', '月', false, 1], ['Neo 浪漫蓝调', '', true, 0]]);
+  assert.equal(items[0].images[0], img);
+});
+
 test('cycle words', () => {
   assert.deepEqual(['日', '月', '半', '季', '年', '双周', '半年抛', '月抛', '两周', ''].map(cycleFrom), ['daily', 'monthly', 'halfyear', 'quarterly', 'yearly', '2week', 'halfyear', 'monthly', '2week', '']);
   assert.deepEqual(splitTitle('Glam Up焦糖美式'), { brand: 'Glam Up', color: '焦糖美式' });

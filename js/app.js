@@ -5,7 +5,7 @@ import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, len
 import { suggest, xhsApp, xhsWeb } from './style.js';
 import { parseExport, toRows } from './importer.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -1067,21 +1067,21 @@ const ACTS = {
 // ---------- import from Apple Reminders ----------
 const HOWTO = `<ol class="howto">
   <li>打开 <b>Shortcuts</b> App，点右上角 <b>+</b> 新建，名字填 <b>Export to Lensy</b>。</li>
-  <li>点 <b>Search Actions</b>，搜索并添加 <b>Find Reminders</b> → 点 <b>Add Filter</b> → 设为 <b>List</b> <b>is</b> <b>眼珠珠</b>（换成你的清单名）。</li>
+  <li>点 <b>Search Actions</b>，添加 <b>Text</b>，里面填 <code>LENSY</code>。再添加 <b>Save File</b>：关掉 <b>Ask Where to Save</b>，<b>Subpath</b> 填 <code>Lensy.txt</code>，打开 <b>Overwrite If File Exists</b>。（每次运行先清空上次的文件）</li>
+  <li>添加 <b>Find Reminders</b> → 点 <b>Add Filter</b> → 设为 <b>List</b> <b>is</b> <b>眼珠珠</b>（换成你的清单名）。</li>
   <li>添加 <b>Repeat with Each</b>，它会自动用上一步的 <b>Reminders</b>。</li>
   <li>在 Repeat 里面添加 <b>Text</b>，照下面四行填写。〔 〕是变量：在键盘上方点 <b>Repeat Item</b> 插入，再点一下这个蓝色变量，选对应的项目（<b>Title</b> / <b>Notes</b> / <b>Is Completed</b>）：
     <pre>@@ITEM
 @@TITLE 〔Repeat Item › Title〕
 @@NOTES 〔Repeat Item › Notes〕
 @@DONE 〔Repeat Item › Is Completed〕</pre></li>
-  <li>接着添加 <b>Add to Variable</b>，<b>Variable Name</b> 填 <b>Output</b>。</li>
+  <li>接着添加 <b>Append to Text File</b>：内容是上一步的 <b>Text</b>，文件选 <b>Shortcuts</b> 文件夹里的 <code>Lensy.txt</code>（File Path 填 <code>Lensy.txt</code>），打开 <b>Make New Line</b>。</li>
   <li>还在 Repeat 里面，添加 <b>Get Details of Reminders</b>，点 <b>Detail</b> 选 <b>Images</b>，后面的对象选 <b>Repeat Item</b>。</li>
   <li>再添加一个 <b>Repeat with Each</b>（对象是上一步的 <b>Images</b>），在它里面依次添加：
-    <b>Resize Image</b>（Width 填 800）→ <b>Convert Image</b>（选 <b>JPEG</b>）→ <b>Base64 Encode</b>（点 <b>Show More</b>，<b>Line Breaks</b> 选 <b>None</b>）→ <b>Text</b> 填 <code>@@IMG 〔Base64 Encoded〕</code> → <b>Add to Variable</b>（<b>Output</b>）。里面这一层的变量叫 <b>Repeat Item 2</b>。</li>
-  <li>在最后一个 <b>End Repeat</b> 下面（两层 Repeat 的外面）添加 <b>Combine Text</b>（Text 选 <b>Output</b>，用 <b>New Lines</b>）→ <b>Save File</b>（打开 <b>Ask Where to Save</b>）。</li>
-  <li>点右下角 ▶ 运行，保存到 <b>Files › On My iPhone</b>，再回来点上面的「选择导出的文件」。</li>
+    <b>Resize Image</b>（选 <b>Repeat Item 2</b>，Width 填 800）→ <b>Convert Image</b>（选 <b>JPEG</b>）→ <b>Base64 Encode</b>（点 <b>Show More</b>，<b>Line Breaks</b> 选 <b>None</b>）→ <b>Text</b> 填 <code>@@IMG 〔Base64 Encoded〕</code> → <b>Append to Text File</b>（和第 6 步一样：<code>Lensy.txt</code>，打开 <b>Make New Line</b>）。</li>
+  <li>结尾不用 Combine Text，也不用再 Save File。点右下角 ▶ 运行，跑完后回来点上面的「选择导出的文件」，在 <b>iCloud Drive › Shortcuts › Lensy.txt</b> 找到它（没开 iCloud Drive 的话在 <b>On My iPhone › Shortcuts</b>）。</li>
 </ol>
-<p class="muted sm">· 如果第 6 步的 <b>Detail</b> 里没有 <b>Images</b>，跳过第 6、7 步，只导入文字，照片之后在 Lensy 里补。<br>· 第一次运行时 iPhone 会问是否允许访问 Reminders，点 <b>Allow</b>。<br>· 以后清单有更新，再运行一次快捷指令、再导入即可，已有的会自动跳过。</p>`;
+<p class="muted sm">· 每处理一条就写进文件，不会因为照片太多而在最后出错（“There was a problem running the shortcut”）。<br>· 如果第 7 步的 <b>Detail</b> 里没有 <b>Images</b>，跳过第 7、8 步，只导入文字，照片之后在 Lensy 里补。<br>· 第一次运行时 iPhone 会问是否允许访问 Reminders 和文件，点 <b>Allow</b>。<br>· 以后清单有更新，再运行一次快捷指令、再导入即可，已有的会自动跳过。</p>`;
 
 function importSheet() {
   const sh = sheet('从 Reminders 导入', `<p class="ask">网页 App 不能直接读取 Reminders，所以要先用一个 Shortcuts 快捷指令把清单和图片导出成文件（只需设置一次），再在这里选择那个文件。</p>

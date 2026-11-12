@@ -1,0 +1,9 @@
+{
+  "name": "lensy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/logic.test.js && node test/ui-test.js",
+    "serve": "node test/server.js"
+  }
+}

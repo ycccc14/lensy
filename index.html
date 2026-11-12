@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Lensy 美瞳记录</title>
+  <meta name="description" content="记录美瞳库存、开封日期、换水提醒、护理液过期和心愿单">
+  <meta name="theme-color" content="#fbf4f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1d181c" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Lensy">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="view"><div class="empty">加载中…</div></main>
+  <nav class="tabs" aria-label="主菜单">
+    <a href="#home" data-tab="home"><span>🏠</span>首页</a>
+    <a href="#lenses" data-tab="lenses"><span>👁</span>美瞳柜</a>
+    <button class="plus" data-act="quick-add" aria-label="添加">＋</button>
+    <a href="#wish" data-tab="wish"><span>💗</span>心愿单</a>
+    <a href="#me" data-tab="me"><span>⚙️</span>我的</a>
+  </nav>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

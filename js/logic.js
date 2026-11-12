@@ -1,5 +1,5 @@
 // Pure logic: dates, lens state, reminders, stats, calendar export. No DOM here, so node tests can import it.
-import { CYCLES, CARE_TYPES } from './catalog.js';
+import { CYCLES, CARE_TYPES, isDailyDrops, convert, curOf } from './catalog.js';
 
 export const pad = (n) => String(n).padStart(2, '0');
 export const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -16,7 +16,9 @@ export const DEFAULT_SETTINGS = {
   lowStock: 4, // pieces left before a stock reminder
   expiryWarn: 30, // days before a box's printed expiry
   careWarn: 7, // days before a care product runs out
-  currency: 'RM',
+  currency: 'MYR', // currency that totals are shown in (MYR / CNY / AUD)
+  remindAt: '09:00', // time of day for date reminders on the phone
+  push: null, // {id, secret}: this phone's registration with the Lensy Push server
   powerL: '0.00',
   powerR: '0.00',
   notify: false,
@@ -93,6 +95,9 @@ export function reminders(data, settings, now) {
 
   for (const c of data.care || []) {
     if (c.finished) continue;
+    if (isDailyDrops(c) && c.qty != null && c.qty !== '' && Number(c.qty) <= 5) {
+      push({ key: `drops-low:${c.id}:${c.qty}`, kind: 'care-low', level: Number(c.qty) <= 0 ? 'due' : 'info', date: t, careId: c.id, title: `${c.name || '眼药水'} ${Number(c.qty) <= 0 ? '用完了' : `只剩 ${c.qty} 支`}`, sub: '日抛眼药水，记得补货', days: 0 });
+    }
     const end = careEnd(c);
     if (!end) continue;
     const left = diffDays(t, end.date);
@@ -121,12 +126,17 @@ export function careEnd(c) {
   const opts = [];
   if (c.expiry) opts.push({ date: c.expiry, why: '有效期至' });
   const openDays = Number(c.openDays);
-  if (c.openedAt && openDays > 0) opts.push({ date: addDays(c.openedAt, openDays), why: c.type === 'case' || c.type === 'tool' ? '建议更换日' : '开封后可用至' });
+  // Daily (single-use) eye drops are thrown away after each use, so only the box's printed date counts.
+  if (c.openedAt && openDays > 0 && !isDailyDrops(c)) opts.push({ date: addDays(c.openedAt, openDays), why: c.type === 'case' || c.type === 'tool' ? '建议更换日' : '开封后可用至' });
   return opts.sort((a, b) => (a.date < b.date ? -1 : 1))[0] || null;
 }
 
 // Stats for the "我的" page.
-export function stats(data, now) {
+// Price of a lens / care product / wish converted to `to` (old records without a currency are MYR).
+export const priceIn = (x, to) => convert(x && x.price, x && x.priceCur, to || 'MYR');
+
+export function stats(data, now, cur) {
+  cur = curOf(cur);
   const t = today(now);
   const month = t.slice(0, 7);
   const wears = data.wears || [];
@@ -134,8 +144,8 @@ export function stats(data, now) {
   const byLens = {};
   for (const w of wears) byLens[w.lensId] = (byLens[w.lensId] || 0) + 1;
   const monthDays = new Set(wears.filter((w) => w.date.startsWith(month)).map((w) => w.date)).size;
-  const spend = lenses.reduce((a, l) => a + (Number(l.price) || 0), 0) + (data.care || []).reduce((a, c) => a + (Number(c.price) || 0), 0);
-  const lensSpend = lenses.reduce((a, l) => a + (Number(l.price) || 0), 0);
+  const lensSpend = lenses.reduce((a, l) => a + priceIn(l, cur), 0);
+  const spend = lensSpend + (data.care || []).reduce((a, c) => a + priceIn(c, cur), 0);
   const topId = Object.keys(byLens).sort((a, b) => byLens[b] - byLens[a])[0];
   const tones = {};
   for (const w of wears) { const l = lenses.find((x) => x.id === w.lensId); if (l) tones[l.tone || 'brown'] = (tones[l.tone || 'brown'] || 0) + 1; }
@@ -191,4 +201,62 @@ export function gcalLink(title, date, details) {
   const d = date.replace(/-/g, '');
   const n = addDays(date, 1).replace(/-/g, '');
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${d}/${n}&details=${encodeURIComponent(details || '')}`;
+}
+
+// ---------- phone notifications (Lensy Push) ----------
+// Upcoming reminders as exact times, for the push server to send while the app is closed.
+// Date reminders go off at settings.remindAt on their day; "worn too long" at start + maxHours.
+// Each item: {key, at (ms), title, body, url}. Only the future; soonest first.
+export function pushSchedule(data, settings, now) {
+  const s = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  now = now || new Date();
+  const t = today(now);
+  const [hh, mm] = String(s.remindAt || '09:00').split(':').map(Number);
+  const at = (date) => { const d = parseDate(date); d.setHours(hh || 0, mm || 0, 0, 0); return d.getTime(); };
+  const out = [];
+  const snoozed = (rkey, date) => s.snooze && s.snooze[rkey] && s.snooze[rkey] >= date;
+  const add = (key, date, title, body, url, rkey) => {
+    if (!date || date < t || (rkey && snoozed(rkey, date))) return;
+    out.push({ key, at: at(date), title, body, url: url || '#home' });
+  };
+  const wearing = s.wearing;
+  for (const l of data.lenses || []) {
+    if (l.archived) continue;
+    const name = lensName(l);
+    const url = `#lens/${l.id}`;
+    for (const p of activePairs(l)) {
+      const end = pairEnd(l, p);
+      const rkey = `end:${p.id}:${end}`;
+      const warn = Math.max(1, Math.min(s.warnDays, Math.floor(cycleDays(l.cycle) / 4)));
+      if (warn > 1) add(`warn:${p.id}:${end}`, addDays(end, -warn), `⏳ ${name} 还剩 ${warn} 天`, `${end} 到期，记得准备下一副`, url, rkey);
+      add(`end:${p.id}:${end}`, end, `⏳ ${name} 今天到期`, `开封于 ${p.openedAt}，今天戴完请丢弃`, url, rkey);
+      add(`over:${p.id}:${end}`, addDays(end, 1), `⚠️ ${name} 已超出使用期`, '超期佩戴容易引起眼睛感染，请丢弃这副', url, rkey);
+      if (wearing && wearing.pairId === p.id) continue; // taking them off refreshes the solution anyway
+      const every = Number(l.soakDays) || s.soakDays;
+      let d = addDays(lastSoak(p), every);
+      if (d < t) d = t;
+      for (let i = 0; i < 8 && d <= end; i++, d = addDays(d, every)) add(`soak:${p.id}:${d}`, d, `🫧 ${name} 该换护理液了`, `不戴的时候每 ${every} 天换一次镜盒里的护理液`, url, `soak:${p.id}:${d}`);
+    }
+    if ((l.qty || 0) > 0 && l.expiry) {
+      const rkey = `exp:${l.id}:${l.expiry}`;
+      if (s.expiryWarn > 0) add(`expwarn:${l.id}:${l.expiry}`, addDays(l.expiry, -Math.min(s.expiryWarn, 30)), `📦 ${name} 快过有效期`, `有效期至 ${l.expiry}，还剩 ${l.qty} 片`, url, rkey);
+      add(rkey, l.expiry, `📦 ${name} 今天过有效期`, `还剩 ${l.qty} 片，过期请勿佩戴`, url, rkey);
+    }
+  }
+  for (const c of data.care || []) {
+    if (c.finished) continue;
+    const end = careEnd(c);
+    if (!end) continue;
+    const label = c.name || (CARE_TYPES[c.type] ? CARE_TYPES[c.type].label : '护理品');
+    const rkey = `care:${c.id}:${end.date}`;
+    const change = c.type === 'case' || c.type === 'tool';
+    if (s.careWarn > 0) add(`carewarn:${c.id}:${end.date}`, addDays(end.date, -s.careWarn), `🧴 ${label} 还剩 ${s.careWarn} 天`, `${end.why} ${end.date}`, '#lenses/care', rkey);
+    add(rkey, end.date, `🧴 ${label} ${change ? '今天该更换了' : '今天到期'}`, `${end.why} ${end.date}`, '#lenses/care', rkey);
+  }
+  if (wearing && wearing.start) {
+    const off = new Date(wearing.start).getTime() + s.maxHours * 3600000;
+    const l = (data.lenses || []).find((x) => x.id === wearing.lensId);
+    out.push({ key: `wear:${wearing.start}`, at: off, title: `👀 已经戴了 ${s.maxHours} 小时`, body: `${l ? lensName(l) + '，' : ''}记得摘下让眼睛休息`, url: '#home' });
+  }
+  return out.filter((x) => x.at > now.getTime()).sort((a, b) => a.at - b.at).slice(0, 60);
 }

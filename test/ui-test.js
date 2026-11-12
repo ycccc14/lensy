@@ -54,7 +54,7 @@ try {
   assert.equal(await formVal('pack'), '30');
   await tap('[data-f=cycle]', '双周抛');
   ph.nextFiles([PHOTO]);
-  await tap('[data-f=photo]');
+  await tap('[data-f=photo]', '佩戴照');
   await until('document.querySelector(".sheet-wrap .pgrid img")', 'photo from the picker');
   await full('02-form');
   await save();
@@ -110,7 +110,8 @@ try {
   await pickColor('雾霾灰', '雾霾灰');
   assert.equal(await js('document.querySelectorAll(".sheet-wrap [data-f=cycle]").length'), 6);
   await tap('[data-f=cycle]', '年抛');
-  assert.ok((await js('document.querySelector(".sheet-wrap").innerText')).includes('请照包装填写'));
+  assert.ok((await js('document.querySelector(".sheet-wrap").innerText')).includes('请照包装'));
+  assert.ok(await js('!!document.querySelector(".sheet-wrap a[href*=\\"taobao\\"]")'), 'look-up link for the specs');
   assert.ok(await js('document.querySelector(".sheet-wrap [data-f=tone].on").textContent.includes("灰")'), 'tone guessed');
   await type('[name=dia]', '14.1');
   await type('[name=gdia]', '13.4');
@@ -144,8 +145,10 @@ try {
   await tap('.choices .btn', '护理液');
   await until('document.querySelector("[data-f=type]")', 'care form');
   await tap('[data-f=type]', '眼药水');
+  assert.ok(await js('document.querySelector(".sheet-wrap [data-f=dcycle].on").textContent.includes("日抛")'), 'eye drops default to 日抛');
+  assert.ok(await js('!!document.querySelector(".sheet-wrap [name=qty]") && !document.querySelector(".sheet-wrap [name=opened]")'), 'daily drops are counted, not opened');
   await type('[name=name]', '乐敦润眼液');
-  await js('(() => { const c = document.querySelector(".sheet-wrap [name=opened]"); c.checked = true; c.dispatchEvent(new Event("change", { bubbles: true })); })()');
+  await tap('[data-f=dcycle]', '28 天');
   await until('document.querySelector(".sheet-wrap [name=openDays]")', 'open days');
   assert.equal(await formVal('openDays'), '28');
   await type('[name=openedAt]', addDays(T, -25));
@@ -157,6 +160,22 @@ try {
   await noOverflow('care');
   ok('care product: opened eye drops warn before 28 days are up');
 
+  // 6b. Daily (single-use) eye drops: count vials, warn when few are left
+  await tap('.tabs .plus');
+  await tap('.choices .btn', '护理液');
+  await until('document.querySelector("[data-f=type]")', 'care form');
+  await tap('[data-f=type]', '眼药水');
+  await type('[name=name]', '海露单支');
+  await type('[name=qty]', '6');
+  await save();
+  await go('#lenses/care');
+  await tap('[data-act=drop-use]');
+  await sleep(200);
+  assert.equal(await S('S.care.find((c) => c.name === "海露单支").qty'), 5);
+  await go('#home');
+  assert.ok((await js('document.querySelector(".rems").innerText')).includes('海露单支 只剩 5 支'));
+  ok('daily eye drops: "用了一支" counts down, low-stock reminder');
+
   // 7. Wishlist with a picture, then "买到了" turns it into a lens
   await go('#wish');
   await tap('[data-act=add-wish]');
@@ -167,8 +186,12 @@ try {
   await tap('[data-f=photo]');
   await until('document.querySelector(".sheet-wrap .pgrid img")', 'wish photo');
   await type('[name=price]', '89');
+  await js('(() => { const s = document.querySelector(".sheet-wrap [name=priceCur]"); s.value = "CNY"; s.dispatchEvent(new Event("change", { bubbles: true })); })()');
   await save();
   await until('document.querySelector(".wcard img")', 'wish card');
+  assert.equal(await js('(() => { const r = document.querySelector(".wimg").getBoundingClientRect(); return Math.round((r.width / r.height) * 100) / 100; })()'), 1.33, 'wishlist pictures are 4:3');
+  assert.ok((await js('document.querySelector(".wgrid").innerText')).includes('¥ 89'));
+  assert.ok((await js('document.querySelector(".top").innerText')).includes('RM 53.4'), 'total converted to MYR (89 × 0.6)');
   await shot('06-wish');
   await tap('[data-act=wish-bought]');
   await until('document.querySelector(".sheet-wrap [data-f=brand]")', 'lens form from wish');
@@ -179,7 +202,10 @@ try {
   await until('location.hash.startsWith("#lens/")', 'new lens');
   assert.equal(await S('S.wish.length'), 0);
   assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").price'), 89);
-  ok('wishlist with photo → bought → lens');
+  assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").priceCur'), 'CNY');
+  assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").photos[0].kind'), 'web', 'wishlist picture becomes a 网图');
+  assert.ok((await js('document.body.innerText')).includes('网图') && (await js('document.body.innerText')).includes('我的佩戴效果'));
+  ok('wishlist with photo (¥, 4:3) → bought → lens keeps currency, picture filed as 网图');
 
   // 8. Detail page with style suggestions and Xiaohongshu links
   const id = await S('S.lenses.find((l) => l.brand === "Moody").id');
@@ -241,41 +267,67 @@ try {
   assert.equal(await S('S.settings.soakDays'), 5);
   ok('stats, settings saved, calendar export, backup, data survives reload');
 
-  // 11. Import the Apple Reminders list through the file the Shortcut saves
-  const jpg = fs.readFileSync(PHOTO).toString('base64');
-  const exportFile = path.join(os.tmpdir(), 'lensy-reminders-export.txt');
-  fs.writeFileSync(exportFile, [
-    ['拉拜诗 新晋 OL', '月', '否', 2], ['Glam Up 琥珀光', '半', '否', 1], ['拉拜诗 好运女孩', '日', '否', 0],
-    ['Glam Up 焦糖美式', '半', '是', 1], ['Neo 浪漫蓝调', '', '否', 3], ['小众牌 雾霾灰', '年', '否', 0],
-  ].map(([t, nt, d, imgs]) => `@@ITEM\n@@TITLE ${t}\n@@NOTES ${nt}\n@@DONE ${d}\n${Array(imgs).fill(`@@IMG ${jpg}`).join('\n')}`).join('\n'));
+  // 11. Edit the number of pieces bought; photos are sharp; display currency
+  const acId = await S('S.lenses.find((l) => l.brand === "安视优" && l.cycle === "2week").id');
+  await go(`#lens/${acId}`);
+  await tap('[data-act=edit-lens]');
+  await until('document.querySelector(".sheet-wrap [name=boughtQty]")', 'bought pieces field');
+  assert.equal(await formVal('boughtQty'), '6');
+  await type('[name=boughtQty]', '12');
+  await type('[name=qty]', '10');
+  await tap('[data-f=save]');
+  await until('!document.querySelector(".sheet-wrap [name=boughtQty]")', 'saved edit');
+  await sleep(200);
+  assert.deepEqual(await S(`(() => { const l = S.lenses.find((x) => x.id === ${JSON.stringify(acId)}); return [l.boughtQty, l.qty]; })()`), [12, 10]);
+  const ph0 = await S(`S.lenses.find((x) => x.id === ${JSON.stringify(acId)}).photos[0]`);
+  const dims = await js(`new Promise((r) => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = ${JSON.stringify(ph0.full)}; })`);
+  const tdims = await js(`new Promise((r) => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = ${JSON.stringify(ph0.thumb)}; })`);
+  assert.ok(Math.max(...dims) <= 2000 && Math.max(...tdims) >= Math.min(800, Math.max(...dims)) - 1 && ph0.w, `photo kept sharp: full ${dims}, thumb ${tdims}`);
+  assert.equal(ph0.kind, 'mine');
   await go('#me');
-  const lensCount = await S('S.lenses.length');
-  const wishCount = await S('S.wish.length');
-  await tap('[data-act=import-rem]');
-  await until('document.querySelector(".sheet-wrap [data-f=file]")', 'import sheet');
-  await shot('12-import');
-  ph.nextFiles([exportFile]);
-  await tap('[data-f=file]');
-  await until('document.querySelector(".sheet-wrap .irow")', 'import preview');
-  assert.equal(await js('document.querySelectorAll(".sheet-wrap .irow").length'), 6);
-  assert.equal(await js('document.querySelectorAll(".sheet-wrap .istrip img").length'), 7, 'thumbnails from the export');
-  assert.ok(await js('document.querySelectorAll(".sheet-wrap .irow")[5].classList.contains("skip")'), '小众牌 雾霾灰 is already in Lensy');
-  assert.equal(await js('document.querySelectorAll(".sheet-wrap .irow")[0].querySelector("[name=brand]").value'), '拉拜诗');
-  await js('(() => { const c = document.querySelectorAll(".sheet-wrap .irow")[0].querySelector("[name=opened]"); c.checked = true; c.dispatchEvent(new Event("change", { bubbles: true })); })()');
-  assert.ok((await js('document.querySelector(".sheet-wrap [data-f=go]").textContent')).includes('导入 4 个美瞳 · 1 个心愿'));
-  await full('13-import-preview');
-  await tap('[data-f=go]');
-  await until('!document.querySelector(".sheet-wrap")', 'import finished', 15000);
-  assert.equal(await S('S.lenses.length'), lensCount + 4);
-  assert.equal(await S('S.wish.length'), wishCount + 1);
-  const ol = await S('S.lenses.find((l) => l.color === "新晋 OL")');
-  assert.deepEqual([ol.brand, ol.cycle, ol.photos.length, ol.pairs.length, ol.pairs[0].status, ol.dia], ['拉拜诗', 'monthly', 2, 1, 'using', 14.2]);
-  const caramel = await S('S.lenses.find((l) => l.color === "焦糖美式")');
-  assert.deepEqual([caramel.archived, caramel.cycle, caramel.tone], [true, 'halfyear', 'amber']);
-  assert.equal(await S('S.wish.find((w) => w.color === "浪漫蓝调").photos.length'), 3);
-  await go('#lenses/using');
-  await shot('14-after-import');
-  ok('import Apple Reminders export: preview, photos, open pair, ticked → archive, wish');
+  await js('(() => { const s = document.querySelector("[data-set=currency]"); s.value = "AUD"; s.dispatchEvent(new Event("change", { bubbles: true })); })()');
+  await sleep(250);
+  assert.equal(await S('S.settings.currency'), 'AUD');
+  assert.ok((await js('document.querySelector(".statcard").innerText')).includes('A$'), 'total spend shown in AUD');
+  await js('(() => { const s = document.querySelector("[data-set=currency]"); s.value = "MYR"; s.dispatchEvent(new Event("change", { bubbles: true })); })()');
+  await sleep(200);
+  ok('edit pieces bought, photos stored large, totals in the chosen currency');
+
+  // 12. Phone notifications: subscribe, send the schedule to the push server (faked here), test push
+  await ph.send('Browser.grantPermissions', { origin: URL0.slice(0, -1), permissions: ['notifications'] }).catch(() => {});
+  await js(`(() => {
+    window.__pushCalls = [];
+    Notification.requestPermission = async () => 'granted';
+    Object.defineProperty(Notification, 'permission', { get: () => 'granted' });
+    const fake = { endpoint: 'https://web.push.apple.com/fake', options: { applicationServerKey: null }, unsubscribe: async () => true, toJSON() { return { endpoint: this.endpoint }; } };
+    PushManager.prototype.subscribe = async function () { this.__sub = fake; return fake; };
+    PushManager.prototype.getSubscription = async function () { return this.__sub || null; };
+    const real = window.fetch;
+    window.fetch = async (url, opts) => {
+      if (String(url).startsWith('https://script.google.com/')) {
+        const b = JSON.parse(opts.body); window.__pushCalls.push(b);
+        const result = b.fn === 'key' ? 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' : b.fn === 'sync' ? { items: b.items.length } : { sent: 1 };
+        return new Response(JSON.stringify({ ok: true, result }));
+      }
+      return real(url, opts);
+    };
+  })()`);
+  await tap('[data-act=notify]');
+  await until('window.__lensy.S.settings.push && window.__lensy.S.settings.push.on', 'push on', 8000);
+  const calls = await js('window.__pushCalls');
+  const sync = calls.find((c) => c.fn === 'sync');
+  assert.ok(sync && sync.endpoint === 'https://web.push.apple.com/fake' && sync.items.length > 0 && sync.id && sync.secret, 'schedule sent with endpoint');
+  assert.ok(sync.items.every((x) => x.at > Date.now() && x.title), 'only future reminders with text');
+  assert.ok(await js('caches.open("lensy-push").then((c) => c.match("push-config")).then((r) => r.json()).then((j) => !!(j.id && j.secret && j.api))'), 'service worker can find the id + secret');
+  await until('document.querySelector("[data-act=push-test]")', 'test button');
+  await tap('[data-act=push-test]');
+  await until('window.__pushCalls.some((c) => c.fn === "test")', 'test push');
+  const n0 = (await js('window.__pushCalls')).length;
+  await js('(() => { const i = document.querySelector("[data-set=remindAt]"); i.value = "21:00"; i.dispatchEvent(new Event("change", { bubbles: true })); })()');
+  await until(`window.__pushCalls.length > ${n0}`, 'schedule re-sent after a change', 6000);
+  const last = (await js('window.__pushCalls')).pop();
+  assert.ok(last.fn === 'sync' && last.items.filter((x) => !x.key.startsWith('wear:')).every((x) => new Date(x.at).getHours() === 21), 'new reminder time used');
+  ok('push notifications: subscribe, schedule synced to the server, test, re-sync on change');
 
   // 12. Dark mode look
   await ph.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });

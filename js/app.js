@@ -1,16 +1,28 @@
 // Lensy — contact lens tracker. Screens, forms and actions.
 import * as DB from './db.js';
-import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, findBrand, colorsFor, specFor, cyclesFor, guessTone } from './catalog.js';
-import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate } from './logic.js';
+import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, CURRENCIES, CUR_KEYS, curOf, convert, isDailyDrops, fixCare, findBrand, colorsFor, specFor, cyclesFor, guessTone } from './catalog.js';
+import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
 import { suggest, xhsApp, xhsWeb } from './style.js';
-import { parseExport, toRows } from './importer.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
+// Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
+const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (n) => (Number(n) ? `${S.settings.currency} ${Number(n).toFixed(2).replace(/\.00$/, '')}` : '');
+const dispCur = () => curOf(S.settings.currency);
+const fmtNum = (n) => (Math.round(Number(n) * 100) / 100).toFixed(2).replace(/\.00$/, '');
+// money(n, cur): an amount in its own currency (default: the display currency).
+const money = (n, cur) => (Number(n) ? `${CURRENCIES[curOf(cur || dispCur())].label} ${fmtNum(n)}` : '');
+// A record's price as typed, plus "≈ RM x" when it is in another currency than the display one.
+const priceText = (x) => {
+  if (!Number(x && x.price)) return '';
+  const own = curOf(x.priceCur);
+  return own === dispCur() ? money(x.price, own) : `${money(x.price, own)}（≈ ${money(priceIn(x, dispCur()))}）`;
+};
+const curSelect = (val) => `<select name="priceCur" class="cur">${CUR_KEYS.map((k) => `<option value="${k}" ${curOf(val) === k ? 'selected' : ''}>${k}</option>`).join('')}</select>`;
+const priceField = (f, label) => field(label || '价格', `<div class="money-in">${input('price', f.price, 'inputmode="decimal" placeholder="总价"')}${curSelect(f.priceCur)}</div>`, '1 CNY = 0.6 MYR，1 AUD = 2.8 MYR');
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const toneHex = (t) => (TONES[t] || TONES.brown).hex;
@@ -26,20 +38,23 @@ const lensById = (id) => S.lenses.find((l) => l.id === id);
 // ---------- storage ----------
 async function load() {
   const [lenses, care, wish, wears, learned, kv] = await Promise.all([DB.all('lenses'), DB.all('care'), DB.all('wish'), DB.all('wears'), DB.all('learned'), DB.get('kv', 'settings')]);
-  Object.assign(S, { lenses, care, wish, wears, learned });
+  Object.assign(S, { lenses, care: care.map(fixCare), wish, wears, learned });
   S.settings = { ...DEFAULT_SETTINGS, ...(kv ? kv.value : {}) };
+  if (!CURRENCIES[S.settings.currency]) S.settings.currency = 'MYR'; // was a free-text symbol ('RM') before v1.3
 }
-const saveSettings = () => DB.put('kv', { id: 'settings', value: S.settings });
+const saveSettings = async () => { await DB.put('kv', { id: 'settings', value: S.settings }); pushSoon(); };
 async function save(store, rec) {
   rec.updatedAt = Date.now();
   const i = S[store].findIndex((x) => x.id === rec.id);
   if (i < 0) S[store].push(rec); else S[store][i] = rec;
   await DB.put(store, rec);
+  pushSoon();
   return rec;
 }
 async function remove(store, id) {
   S[store] = S[store].filter((x) => x.id !== id);
   await DB.del(store, id);
+  pushSoon();
 }
 // Remember what the user typed so the next lens of the same brand/colour/cycle fills itself in.
 async function learn(l) {
@@ -129,25 +144,47 @@ function pickFiles(accept, multiple) {
 const readUrl = (file) => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(r.error); r.readAsDataURL(file); });
 const readText = (file) => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(r.error); r.readAsText(file); });
 const loadImg = (src) => new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('图片读取失败')); i.src = src; });
+// Sharp resize: halve step by step (one big jump drops detail and looks blurry), high-quality smoothing.
 function shrink(img, max, q) {
-  const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  const k = Math.min(1, max / Math.max(w, h));
+  const W = Math.round(w * k);
+  const H = Math.round(h * k);
+  let src = img;
+  while (w / 2 >= W * 1.05) {
+    const c = document.createElement('canvas');
+    c.width = Math.round(w / 2); c.height = Math.round(h / 2);
+    const x = c.getContext('2d');
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    x.drawImage(src, 0, 0, c.width, c.height);
+    src = c; w = c.width; h = c.height;
+  }
   const c = document.createElement('canvas');
-  c.width = Math.round(img.naturalWidth * k);
-  c.height = Math.round(img.naturalHeight * k);
-  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, W, H);
   return c.toDataURL('image/jpeg', q);
 }
-async function photosFromPicker() {
+const PHOTO_MAX = 2000; // long side of the stored photo (full screen on any phone stays sharp)
+const THUMB_MAX = 800; // grid tiles and cards (≈ 3× their on-screen size)
+// kind: 'mine' (我的佩戴效果) or 'web' (网图: shop / 小红书 pictures)
+async function photosFromPicker(kind) {
   const files = await pickFiles('image/*', true);
   const out = [];
   for (const f of files) {
     try {
       const img = await loadImg(await readUrl(f));
-      out.push({ full: shrink(img, 1080, 0.82), thumb: shrink(img, 300, 0.8) });
+      out.push({ full: shrink(img, PHOTO_MAX, 0.9), thumb: shrink(img, THUMB_MAX, 0.88), w: 2, kind: kind || 'mine' });
     } catch (e) { toast('有一张图片读不了，换一张试试'); }
   }
   return out;
 }
+// Photos saved before v1.3 have a 300px thumbnail that looks blurry when shown big: use the full picture.
+const photoSrc = (p) => (p.w ? p.thumb : p.full || p.thumb);
+const kindOf = (p, def) => p.kind || def || 'mine';
+const PHOTO_KINDS = { mine: '我的佩戴效果', web: '网图' };
 
 async function shareFile(name, text, type) {
   const file = new File([text], name, { type });
@@ -170,7 +207,8 @@ const powers = () => {
 };
 const powerSelect = (name, val, attrs) => `<select name="${name}" ${attrs || ''}>${powers().map((p) => `<option ${p === String(val) ? 'selected' : ''}>${p}</option>`).join('')}</select>`;
 const bar = (frac, cls) => `<div class="prog ${cls || ''}"><i style="width:${Math.max(3, Math.min(100, frac * 100)).toFixed(1)}%"></i></div>`;
-const thumbOf = (x, cls) => (x.photos && x.photos[0] ? `<img class="thumb ${cls || ''}" src="${x.photos[0].thumb}" alt="">` : `<div class="thumb ${cls || ''} noimg">${iris(x.tone, 'lg')}</div>`);
+const firstPhoto = (x) => (x.photos || []).find((p) => kindOf(p) === 'mine') || (x.photos || [])[0];
+const thumbOf = (x, cls) => (firstPhoto(x) ? `<img class="thumb ${cls || ''}" src="${photoSrc(firstPhoto(x))}" alt="">` : `<div class="thumb ${cls || ''} noimg">${iris(x.tone, 'lg')}</div>`);
 const xhsButtons = (q, label) => `<div class="xhs"><a class="btn xhs-btn" href="${xhsApp(q)}">📕 ${esc(label || '小红书')}</a><a class="btn ghost sm" href="${xhsWeb(q)}" target="_blank" rel="noopener">网页版</a></div>`;
 
 // ---------- screens ----------
@@ -230,15 +268,15 @@ function wearCard() {
   const last = done[done.length - 1];
   const lastLens = last && lensById(last.lensId);
   if (!opts.length) {
-    return `<section class="card wear-pick"><b>还没有可以戴的美瞳</b><p class="muted">先把手上的美瞳录进来吧</p><div class="btns"><button class="btn primary" data-act="add-lens">＋ 添加美瞳</button><button class="btn soft" data-act="import-rem">从 Reminders 导入</button></div></section>`;
+    return `<section class="card wear-pick"><b>还没有可以戴的美瞳</b><p class="muted">先把手上的美瞳录进来吧</p><div class="btns"><button class="btn primary" data-act="add-lens">＋ 添加美瞳</button></div></section>`;
   }
   return `<section class="card wear-pick">
     <div class="row between"><b>今天戴哪副？</b>${lastLens ? `<span class="muted sm">今天戴过 ${esc(lastLens.color || lastLens.brand)}${last.hours ? ` ${last.hours.toFixed(1)}h` : ''}</span>` : ''}</div>
-    <div class="hscroll">${opts.map((o) => `<button class="pickl" data-act="wear" data-id="${o.l.id}" data-pair="${o.p ? o.p.id : ''}">
+    <div class="pickgrid">${opts.map((o) => `<button class="pickl" data-act="wear" data-id="${o.l.id}" data-pair="${o.p ? o.p.id : ''}">
       ${thumbOf(o.l, 'sm')}<b>${esc(o.l.color || o.l.brand)}</b><span>${esc(o.sub)}</span></button>`).join('')}</div></section>`;
 }
 
-const REM_ICON = { 'pair-end': '⏳', soak: '🫧', 'lens-expiry': '📦', 'low-stock': '🛒', care: '🧴', 'wear-long': '👀', backup: '💾' };
+const REM_ICON = { 'pair-end': '⏳', soak: '🫧', 'lens-expiry': '📦', 'low-stock': '🛒', care: '🧴', 'care-low': '💧', 'wear-long': '👀', backup: '💾' };
 function remCard(r) {
   const go = r.lensId ? `<a class="btn ghost sm" href="#lens/${r.lensId}">查看</a>` : '';
   const later = (days, label) => `<button class="btn ghost sm" data-act="snooze" data-key="${esc(r.key)}" data-days="${days}">${label || '稍后'}</button>`;
@@ -248,6 +286,7 @@ function remCard(r) {
     'lens-expiry': `${go}${later(7, '知道了')}`,
     'low-stock': `<button class="btn sm primary" data-act="restock" data-id="${r.lensId}">补货 +1盒</button><a class="btn ghost sm" href="#wish">心愿单</a>${later(9999, '知道了')}`,
     care: `<button class="btn sm primary" data-act="care-done" data-id="${r.careId}">用完/已换新</button>${later(0)}`,
+    'care-low': `<a class="btn sm primary" href="#lenses/care">去看看</a>${later(9999, '知道了')}`,
     'wear-long': '<button class="btn sm primary" data-act="wear-stop">摘下 👋</button>',
     backup: `<button class="btn sm primary" data-act="backup">立即备份</button>${later(9999, '知道了')}`,
   };
@@ -300,7 +339,7 @@ function lensCard(l) {
     line = `第 ${Math.max(1, used)}/${total} 天 · ${left >= 0 ? `${left} 天后到期` : `已超期 ${-left} 天`}${ps.length > 1 ? ` · 共 ${ps.length} 副在用` : ''}${l.qty ? ` · 库存 ${l.qty} 片` : ''}`;
     prog = bar(used / total, left < 0 ? 'red' : left <= 7 ? 'amber' : '');
   } else if (st === 'done') {
-    line = `${l.archived ? (l.archiveWhy || '已存档') : '已用完'} · 共戴 ${wearsOf(l.id).length} 次${l.price ? ` · ${money(l.price)}` : ''}`;
+    line = `${l.archived ? (l.archiveWhy || '已存档') : '已用完'} · 共戴 ${wearsOf(l.id).length} 次${l.price ? ` · ${money(l.price, l.priceCur)}` : ''}`;
   } else if (!isLong(l.cycle)) {
     line = `剩 ${l.qty} 片 · 戴过 ${wearsOf(l.id).length} 次${l.expiry ? ` · 有效期 ${l.expiry}` : ''}`;
     if (l.boughtQty) prog = bar(l.qty / l.boughtQty, l.qty <= S.settings.lowStock ? 'amber' : '');
@@ -322,15 +361,18 @@ function careList() {
     const left = end ? diffDays(today(), end.date) : null;
     let prog = '';
     if (c.openedAt && end) { const total = Math.max(1, diffDays(c.openedAt, end.date)); prog = bar(diffDays(c.openedAt, today()) / total, left < 0 ? 'red' : left <= S.settings.careWarn ? 'amber' : ''); }
+    const daily = isDailyDrops(c);
     const status = c.finished ? `已用完 ${c.finishedAt || ''}` : end ? `${end.why} ${end.date}（${dueLabel(left)}）` : '未填写有效期';
+    const sub = daily ? `日抛${c.qty !== '' && c.qty != null ? ` · 剩 ${c.qty} 支` : ''}` : c.openedAt ? `开封 ${c.openedAt}${c.type === 'drops' ? ` · ${c.openDays} 天内用完` : ''}` : '未开封';
     return `<div class="card ccard ${left != null && left < 0 && !c.finished ? 'late' : ''}">
-      <div class="row">${c.photos && c.photos[0] ? `<img class="thumb sm" src="${c.photos[0].thumb}" alt="">` : `<div class="cicon">${ty.icon}</div>`}
-      <div class="grow"><b>${esc(c.name || ty.label)}</b><div class="muted sm">${ty.label}${c.openedAt ? ` · 开封 ${c.openedAt}` : ' · 未开封'}</div><div class="sm ${left != null && left < 0 && !c.finished ? 'red-t' : ''}">${esc(status)}</div>${prog}</div></div>
+      <div class="row">${c.photos && c.photos[0] ? `<img class="thumb sm" src="${photoSrc(c.photos[0])}" alt="">` : `<div class="cicon">${ty.icon}</div>`}
+      <div class="grow"><b>${esc(c.name || ty.label)}</b><div class="muted sm">${ty.label} · ${esc(sub)}</div><div class="sm ${left != null && left < 0 && !c.finished ? 'red-t' : ''}">${esc(status)}</div>${prog}</div></div>
       <div class="btns">${c.finished ? `<button class="btn ghost sm" data-act="care-restore" data-id="${c.id}">恢复</button>`
+        : daily ? `<button class="btn sm primary" data-act="drop-use" data-id="${c.id}">用了一支 −1</button><button class="btn sm soft" data-act="care-done" data-id="${c.id}">用完了</button>`
         : `${!c.openedAt ? `<button class="btn sm primary" data-act="care-open" data-id="${c.id}">今天开封</button>` : ''}<button class="btn sm soft" data-act="care-done" data-id="${c.id}">${c.type === 'case' ? '已换新' : '用完了'}</button>`}
       <button class="btn ghost sm" data-act="edit-care" data-id="${c.id}">编辑</button></div></div>`;
   };
-  return `<p class="muted sm pad">护理液开封后一般 90 天内用完，眼药水开封后 28 天，镜盒建议每 3 个月更换。</p>
+  return `<p class="muted sm pad">护理液开封后一般 90 天内用完；眼药水按包装上的使用周期（日抛单支装用一次就丢）；镜盒建议每 3 个月更换。</p>
     <div class="list">${active.length ? active.map(card).join('') : '<div class="empty">记录护理液、眼药水、镜盒，快过期时会提醒你<br><button class="btn primary" data-act="add-care">＋ 添加护理品</button></div>'}</div>
     ${old.length ? `<details class="old"><summary>已用完（${old.length}）</summary><div class="list">${old.map(card).join('')}</div></details>` : ''}`;
 }
@@ -344,9 +386,15 @@ function LensDetail(id) {
   const long = isLong(l.cycle);
   const ps = activePairs(l);
   const wears = wearsOf(l.id).sort((a, b) => ((a.start || a.date) < (b.start || b.date) ? 1 : -1));
-  const photos = l.photos && l.photos.length
-    ? `<div class="gallery">${l.photos.map((p, i) => `<img src="${p.thumb}" data-act="photo" data-id="${l.id}" data-i="${i}" alt="">`).join('')}</div>`
-    : `<div class="gallery none" data-act="add-photo" data-id="${l.id}">${iris(l.tone, 'xl')}<span>＋ 添加照片</span></div>`;
+  const all = l.photos || [];
+  const gal = (kind) => {
+    const list = all.map((p, i) => ({ p, i })).filter((x) => kindOf(x.p) === kind);
+    return `<section class="card gal"><div class="row between"><h3>${PHOTO_KINDS[kind]}${list.length ? `<small>${list.length} 张</small>` : ''}</h3><button class="btn ghost sm" data-act="add-photo" data-id="${l.id}" data-kind="${kind}">＋ 添加</button></div>
+      ${list.length ? `<div class="gallery ${list.length === 1 ? 'one' : ''}">${list.map((x) => `<img src="${list.length === 1 ? x.p.full || x.p.thumb : photoSrc(x.p)}" data-act="photo" data-id="${l.id}" data-i="${x.i}" alt="">`).join('')}</div>`
+        : `<p class="muted sm">${kind === 'mine' ? '拍一张自己戴上的效果，方便以后对比' : '存店铺图或小红书上的上眼图'}</p>`}</section>`;
+  };
+  const photos = all.length ? gal('mine') + gal('web')
+    : `<div class="gallery none" data-act="add-photo" data-id="${l.id}" data-kind="mine">${iris(l.tone, 'xl')}<span>＋ 添加我的佩戴效果</span></div><div class="btns center"><button class="btn ghost sm" data-act="add-photo" data-id="${l.id}" data-kind="web">＋ 添加网图</button></div>`;
   const per = Number(l.perWear) || 2;
   const stock = st === 'done' && !l.qty ? '' : `<section class="card">
     <div class="row between"><div><div class="label">库存</div><div class="big">${l.qty || 0}<small> 片</small></div></div>
@@ -385,7 +433,7 @@ function LensDetail(id) {
   <section class="card"><h3>产品资料</h3><div class="specs">
     ${spec('直径', l.dia, 'mm')}${spec('着色直径', l.gdia, 'mm')}${spec('基弧', l.bc, 'mm')}${spec('含水量', l.water, '%')}
     ${spec('度数 左', l.powerL)}${spec('度数 右', l.powerR)}${spec('有效期', l.expiry)}${spec('购买日期', l.buyDate)}
-    ${spec('价格', money(l.price))}${spec('购买渠道', l.shop)}${long ? spec('换水间隔', `${Number(l.soakDays) || S.settings.soakDays} 天`) : ''}${spec('买入片数', l.boughtQty)}
+    ${spec('价格', priceText(l))}${spec('购买渠道', l.shop)}${long ? spec('换水间隔', `${Number(l.soakDays) || S.settings.soakDays} 天`) : ''}${spec('买入片数', l.boughtQty)}
   </div>${l.notes ? `<p class="note">📝 ${esc(l.notes)}</p>` : ''}</section>
   <section class="card style"><h3>风格 & 妆容建议 <small>根据花色、色系和尺寸自动生成</small></h3>
     <div class="tags">${sg.tags.map((x) => `<span class="tag pink">${esc(x)}</span>`).join('')}</div>
@@ -410,23 +458,28 @@ function LensDetail(id) {
 
 function Wish() {
   const list = S.wish.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0) || (b.createdAt || 0) - (a.createdAt || 0));
-  const total = list.reduce((a, w) => a + (Number(w.price) || 0), 0);
+  const total = list.reduce((a, w) => a + priceIn(w, dispCur()), 0);
   return `<header class="top"><div><h1>心愿单</h1>${total ? `<div class="muted sm">全部买下约 ${money(total)}</div>` : ''}</div><button class="btn primary round" data-act="add-wish" aria-label="添加心愿">＋</button></header>
   <div class="wgrid">${list.length ? list.map((w) => {
     const q = `${w.brand || ''} ${(w.color || '').split(' ').find((x) => /[一-龥]/.test(x)) || w.color || ''} 上眼`.trim();
     return `<div class="card wcard">
-      <div class="wimg" data-act="edit-wish" data-id="${w.id}">${w.photos && w.photos[0] ? `<img src="${w.photos[0].thumb}" alt="">` : iris(w.tone, 'xl')}${w.priority ? `<span class="pri">${'♥'.repeat(w.priority)}</span>` : ''}</div>
+      <div class="wimg" data-act="edit-wish" data-id="${w.id}">${w.photos && w.photos[0] ? `<img src="${photoSrc(w.photos[0])}" alt="">` : iris(w.tone, 'xl')}${w.priority ? `<span class="pri">${'♥'.repeat(w.priority)}</span>` : ''}</div>
       <div class="wbody" data-act="edit-wish" data-id="${w.id}"><b>${esc(w.brand || '')}</b><div class="sm">${esc(w.color || '')}</div>
-      <div class="muted sm">${[w.cycle && CYCLES[w.cycle] ? CYCLES[w.cycle].label : '', money(w.price)].filter(Boolean).join(' · ')}</div></div>
+      <div class="muted sm">${[w.cycle && CYCLES[w.cycle] ? CYCLES[w.cycle].label : '', money(w.price, w.priceCur)].filter(Boolean).join(' · ')}</div></div>
       <div class="wact"><a class="btn xhs-btn sm" href="${xhsApp(q)}">📕</a><button class="btn primary sm" data-act="wish-bought" data-id="${w.id}">买到了</button></div></div>`;
   }).join('') : '<div class="empty wide">把下次想买的美瞳存起来，附上图片和价格<br><button class="btn primary" data-act="add-wish">＋ 添加心愿</button></div>'}</div>`;
 }
 
 function Me() {
-  const st = stats(S);
+  const st = stats(S, null, dispCur());
   const s = S.settings;
   const num = (key, label, unit, min, max) => `<label class="srow"><span>${label}</span><span><input type="number" inputmode="numeric" min="${min}" max="${max}" data-set="${key}" value="${s[key]}"> ${unit}</span></label>`;
   const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  const pushOn = !!(s.push && s.push.on && perm === 'granted');
+  const canPush = 'PushManager' in window && 'serviceWorker' in navigator;
+  const pushSub = pushOn ? '已开启：到期、换水、护理品、戴太久都会推送，App 关着也会提醒'
+    : IOS && !STANDALONE ? '需要先在 Safari 点 Share → Add to Home Screen，从主屏幕打开 Lensy 再开启'
+      : canPush ? 'App 关着也会准时推送到期、换水等提醒' : '这个浏览器不支持推送通知';
   return `<header class="top"><h1>我的</h1></header>
   <a class="card statcard" href="#stats"><div><b>${st.monthDays}</b><span>本月佩戴天数</span></div><div><b>${st.totalWears}</b><span>累计佩戴</span></div><div><b>${money(st.spend) || '—'}</b><span>总花费</span></div><i>›</i></a>
   <h2 class="sec">我的度数</h2><section class="card">
@@ -437,24 +490,25 @@ function Me() {
     ${num('warnDays', '到期前提醒', '天', 1, 60)}${num('soakDays', '换护理液间隔', '天', 1, 30)}${num('maxHours', '每天最长佩戴', '小时', 1, 24)}
     ${num('lowStock', '日抛库存少于', '片提醒', 0, 60)}${num('expiryWarn', '产品有效期前', '天提醒', 1, 365)}${num('careWarn', '护理品到期前', '天提醒', 1, 60)}</section>
   <h2 class="sec">通知 & 日历</h2><section class="card">
-    <div class="srow"><span>手机通知<small>${perm === 'granted' && s.notify ? '已开启：打开 App 时推送到期提醒，图标显示数字' : IOS && !STANDALONE ? '需要先在 Safari 点 Share → Add to Home Screen，从主屏幕打开再开启' : '打开 App 时推送到期提醒'}</small></span>
-      <button class="btn sm ${s.notify && perm === 'granted' ? 'soft' : 'primary'}" data-act="notify">${s.notify && perm === 'granted' ? '已开启' : '开启'}</button></div>
-    <div class="srow"><span>加入手机日历<small>最可靠：每个到期日、换水日都会在日历里准时响铃，即使没打开 App</small></span><button class="btn sm primary" data-act="ics">导出</button></div></section>
+    <div class="srow"><span>手机通知<small>${pushSub}</small></span>
+      <button class="btn sm ${pushOn ? 'soft' : 'primary'}" data-act="notify">${pushOn ? '已开启' : '开启'}</button></div>
+    ${pushOn ? `<label class="srow"><span>每天提醒时间<small>到期日、换水日在这个时间推送</small></span><input type="time" data-set="remindAt" value="${esc(s.remindAt || '09:00')}" class="time"></label>
+    <div class="srow"><span>测试一下<small>马上发一条通知到这台手机</small></span><button class="btn sm soft" data-act="push-test">发送测试</button></div>` : ''}
+    <div class="srow"><span>加入手机日历<small>也可以把到期日、换水日导出到手机日历</small></span><button class="btn sm ghost" data-act="ics">导出</button></div></section>
   <h2 class="sec">资料备份</h2><section class="card">
     <p class="muted sm">所有资料只存在这台手机上${s.lastBackup ? `，上次备份 ${s.lastBackup.slice(0, 10)}` : '，还没备份过'}。换手机前记得导出。</p>
-    <div class="btns"><button class="btn primary" data-act="backup">导出备份</button><button class="btn soft" data-act="restore">导入备份</button><button class="btn ghost danger-t" data-act="wipe">清空</button></div>
-    <div class="srow"><span>从 Reminders 导入<small>把 iPhone Reminders 里的美瞳清单和图片一次搬进来</small></span><button class="btn sm primary" data-act="import-rem">导入</button></div></section>
+    <div class="btns"><button class="btn primary" data-act="backup">导出备份</button><button class="btn soft" data-act="restore">导入备份</button><button class="btn ghost danger-t" data-act="wipe">清空</button></div></section>
   <h2 class="sec">其他</h2><section class="card">
-    <label class="srow"><span>货币符号</span><input type="text" data-set="currency" value="${esc(s.currency)}" maxlength="4" class="short"></label>
+    <label class="srow"><span>总花费显示为<small>录入价格时可选 MYR / CNY / AUD；1 CNY = 0.6 MYR，1 AUD = 2.8 MYR</small></span><select data-set="currency" class="cur">${CUR_KEYS.map((k) => `<option value="${k}" ${dispCur() === k ? 'selected' : ''}>${CURRENCIES[k].name}</option>`).join('')}</select></label>
     <div class="srow"><span>品牌资料库<small>内置 ${BRANDS.length} 个品牌；你录入的新品牌/花色已记住 ${S.learned.length} 条</small></span></div>
-    <p class="muted sm">内置的直径、基弧、含水量是品牌常见参考值，请以包装为准；改过一次，下次就会用你的数据。</p>
+    <p class="muted sm">只有核对过品牌官网的款式（ACUVUE DEFINE、FreshKon）会自动填参数，其他款式不再填“参考值”以免填错。照包装或售卖页填写一次，下次同款就会自动填好。</p>
     <p class="muted sm">Lensy v${VERSION}</p></section>`;
 }
 
 function Stats(month) {
   const t = today();
   month = /^\d{4}-\d{2}$/.test(month || '') ? month : t.slice(0, 7);
-  const st = stats(S);
+  const st = stats(S, null, dispCur());
   const [y, m] = month.split('-').map(Number);
   const first = new Date(y, m - 1, 1);
   const days = new Date(y, m, 0).getDate();
@@ -556,7 +610,10 @@ function pickColor(brand) {
 // ---------- forms ----------
 const field = (label, inner, hint) => `<div class="field"><label>${label}</label>${inner}${hint ? `<small class="hint">${hint}</small>` : ''}</div>`;
 const input = (name, val, attrs) => `<input name="${name}" value="${esc(val == null ? '' : val)}" ${attrs || ''}>`;
-const photoGrid = (photos) => `<div class="pgrid">${photos.map((p, i) => `<div class="pg"><img src="${p.thumb}" alt=""><button type="button" class="x" data-f="rmphoto" data-i="${i}" aria-label="删除照片">✕</button></div>`).join('')}<button type="button" class="pg add" data-f="photo">＋<small>照片</small></button></div>`;
+// kind: only show photos of this kind ('mine' / 'web'); new photos get that kind. def: kind of old photos without one.
+const photoGrid = (photos, kind, def) => `<div class="pgrid">${photos.map((p, i) => ({ p, i })).filter((x) => !kind || kindOf(x.p, def) === kind)
+  .map(({ p, i }) => `<div class="pg"><img src="${photoSrc(p)}" alt=""><button type="button" class="x" data-f="rmphoto" data-i="${i}" aria-label="删除照片">✕</button></div>`).join('')}<button type="button" class="pg add" data-f="photo" data-kind="${kind || 'mine'}">＋<small>${kind === 'web' ? '网图' : kind === 'mine' ? '佩戴照' : '照片'}</small></button></div>`;
+const shopSearch = (q) => `https://s.taobao.com/search?q=${encodeURIComponent(q)}`;
 const toneChips = (cur) => `<div class="chips">${TONE_KEYS.map((k) => `<button type="button" class="chip ${cur === k ? 'on' : ''}" data-f="tone" data-v="${k}">${iris(k, 'xs')}${TONES[k].label}</button>`).join('')}</div>`;
 
 function syncForm(el, f) {
@@ -568,9 +625,9 @@ function lensForm(existing, prefill, onSaved) {
   const f = existing ? JSON.parse(JSON.stringify(existing)) : {
     id: uid(), brand: '', series: '', color: '', cycle: '', tone: '', dia: '', gdia: '', bc: '', water: '',
     powerL: S.settings.powerL, powerR: S.settings.powerR, boxes: 1, pack: '', expiry: '', buyDate: today(), price: '', shop: '',
-    photos: [], notes: '', soakDays: '', openNow: false, openedAt: today(), perWear: 2, specFrom: '', ...(prefill || {}),
+    photos: [], notes: '', soakDays: '', openNow: false, openedAt: today(), perWear: 2, specFrom: '', priceCur: S.settings.lastCur || dispCur(), ...(prefill || {}),
   };
-  if (existing) f.qty = existing.qty;
+  if (existing) { f.qty = existing.qty; f.boughtQty = existing.boughtQty == null ? '' : existing.boughtQty; f.priceCur = curOf(existing.priceCur); }
   for (const k of ['shop', 'notes', 'expiry', 'buyDate', 'series']) if (f[k] == null) f[k] = '';
   f.photos = f.photos || [];
   const sh = sheet(isNew ? '添加美瞳' : '编辑美瞳', '', { foot: `<button class="btn primary block" data-f="save">${isNew ? '保存' : '保存修改'}</button>` });
@@ -581,6 +638,7 @@ function lensForm(existing, prefill, onSaved) {
       f.dia = sp.dia == null ? '' : sp.dia; f.gdia = sp.gdia == null ? '' : sp.gdia; f.bc = sp.bc == null ? '' : sp.bc; f.water = sp.water == null ? '' : sp.water;
       if (isNew) f.pack = sp.pack;
       f.specFrom = sp.from;
+      f.specSrc = sp.src || '';
     } else f.specFrom = 'none';
   };
   const fixCycle = () => {
@@ -594,7 +652,10 @@ function lensForm(existing, prefill, onSaved) {
     const y = sh.body.scrollTop;
     const opts = f.brand && f.color ? cyclesFor(f.brand, f.color, S.learned, f.series) : CYCLE_KEYS;
     const long = f.cycle && isLong(f.cycle);
-    const specHint = { ref: '✓ 已按品牌参考资料自动填写，请以包装为准', mine: '✓ 已按你上次录入的资料自动填写', none: '没有这款的资料，请照包装填写，下次会自动记住' }[f.specFrom] || '选好品牌、花色和周期后会自动填写';
+    const specHint = { ref: `✓ 已按${esc(f.specSrc || '品牌官网')}的资料自动填写`, mine: '✓ 已按你上次录入的资料自动填写', none: '这款没有核对过的资料，请照包装或售卖页填写，下次同款会自动填好' }[f.specFrom] || '选好品牌、花色和周期后会自动填写';
+    const q = `${f.brand} ${f.color} ${f.cycle && CYCLES[f.cycle] ? CYCLES[f.cycle].label : ''} 直径 着色直径 基弧 含水量`.replace(/\s+/g, ' ').trim();
+    const lookUp = f.brand && f.color && f.specFrom !== 'ref' && f.specFrom !== 'mine'
+      ? `<div class="btns tight"><a class="btn ghost sm" href="${shopSearch(q)}" target="_blank" rel="noopener">🛒 淘宝查参数</a><a class="btn xhs-btn sm" href="${xhsApp(q)}">📕 小红书查</a></div>` : '';
     const total = (Number(f.boxes) || 0) * (Number(f.pack) || 0);
     sh.body.innerHTML = `
       ${field('品牌', `<button type="button" class="pick" data-f="brand">${f.brand ? esc(f.brand) : '<span class="ph">选择品牌</span>'}<i>›</i></button>`)}
@@ -606,19 +667,21 @@ function lensForm(existing, prefill, onSaved) {
         <span>着色直径<input name="gdia" inputmode="decimal" value="${esc(f.gdia)}" placeholder="13.6"><em>mm</em></span>
         <span>基弧<input name="bc" inputmode="decimal" value="${esc(f.bc)}" placeholder="8.6"><em>mm</em></span>
         <span>含水量<input name="water" inputmode="decimal" value="${esc(f.water)}" placeholder="38"><em>%</em></span></div>
-        <small class="hint ${f.specFrom === 'ref' || f.specFrom === 'mine' ? 'ok' : ''}">${specHint}</small></div>
+        <small class="hint ${f.specFrom === 'ref' || f.specFrom === 'mine' ? 'ok' : ''}">${specHint}</small>${lookUp}</div>
       ${field('色系（用于妆容建议）', toneChips(f.tone || guessTone(f.color)))}
       <div class="field two"><div><label>左眼度数</label>${powerSelect('powerL', f.powerL)}</div><div><label>右眼度数</label>${powerSelect('powerR', f.powerR)}</div></div>
       ${isNew
         ? field('数量', `<div class="qtyrow">${input('boxes', f.boxes, 'inputmode="numeric" class="short"')}<span>盒 ×</span>${input('pack', f.pack, 'inputmode="numeric" class="short" placeholder="片"')}<span>片/盒 = <b>${total}</b> 片</span></div>`)
-        : field('剩余片数', input('qty', f.qty, 'inputmode="numeric" class="short"'))}
+        : `<div class="field two"><div><label>剩余片数</label>${input('qty', f.qty, 'inputmode="numeric"')}</div><div><label>买入片数</label>${input('boughtQty', f.boughtQty, 'inputmode="numeric" placeholder="一共买了几片"')}</div></div>`}
       ${field('每次佩戴', `<div class="chips"><button type="button" class="chip ${Number(f.perWear) !== 1 ? 'on' : ''}" data-f="per" data-v="2">两眼 2 片</button><button type="button" class="chip ${Number(f.perWear) === 1 ? 'on' : ''}" data-f="per" data-v="1">单眼 1 片</button></div>`)}
       ${long ? field('换护理液间隔（天）', input('soakDays', f.soakDays, `inputmode="numeric" class="short" placeholder="${S.settings.soakDays}"`), '不戴的时候，镜盒里的护理液多久换一次；留空用默认值') : ''}
       ${isNew && long ? `<div class="field"><label class="check"><input type="checkbox" name="openNow" ${f.openNow ? 'checked' : ''}> 已经开封在用了</label>
         ${f.openNow ? `<div class="two"><div><label>开封日期</label>${input('openedAt', f.openedAt, 'type="date"')}</div><div class="hint">会从库存扣掉一副，并开始计算到期日</div></div>` : ''}</div>` : ''}
       <div class="field two"><div><label>产品有效期</label>${input('expiry', f.expiry, 'type="date"')}</div><div><label>购买日期</label>${input('buyDate', f.buyDate, 'type="date"')}</div></div>
-      <div class="field two"><div><label>价格（${esc(S.settings.currency)}）</label>${input('price', f.price, 'inputmode="decimal" placeholder="总价"')}</div><div><label>购买渠道</label>${input('shop', f.shop, 'placeholder="淘宝 / Shopee / 门店"')}</div></div>
-      ${field('照片', photoGrid(f.photos), '可以拍包装、镜片、上眼效果')}
+      ${priceField(f)}
+      ${field('购买渠道', input('shop', f.shop, 'placeholder="淘宝 / Shopee / 门店"'))}
+      ${field('我的佩戴效果', photoGrid(f.photos, 'mine'), '自己戴上的照片')}
+      ${field('网图', photoGrid(f.photos, 'web'), '店铺图、小红书上眼图')}
       ${field('备注', `<textarea name="notes" rows="2" placeholder="舒适度、上眼感受…">${esc(f.notes)}</textarea>`)}`;
     sh.body.scrollTop = y;
   };
@@ -643,7 +706,7 @@ function lensForm(existing, prefill, onSaved) {
       draw();
     } else if (k === 'tone') { f.tone = b.dataset.v; draw(); }
     else if (k === 'per') { f.perWear = Number(b.dataset.v); draw(); }
-    else if (k === 'photo') { f.photos.push(...(await photosFromPicker())); draw(); }
+    else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
     else if (k === 'save') {
       if (!f.brand) { toast('请选择品牌'); return; }
@@ -654,7 +717,7 @@ function lensForm(existing, prefill, onSaved) {
       Object.assign(rec, {
         brand: f.brand.trim(), series: f.series || '', color: f.color.trim(), cycle: f.cycle, tone: f.tone || guessTone(f.color),
         dia: n(f.dia), gdia: n(f.gdia), bc: n(f.bc), water: n(f.water), powerL: f.powerL, powerR: f.powerR,
-        expiry: f.expiry, buyDate: f.buyDate, price: n(f.price), shop: f.shop.trim(), photos: f.photos, notes: f.notes.trim(),
+        expiry: f.expiry, buyDate: f.buyDate, price: n(f.price), priceCur: curOf(f.priceCur), shop: f.shop.trim(), photos: f.photos, notes: f.notes.trim(),
         soakDays: n(f.soakDays), perWear: Number(f.perWear) === 1 ? 1 : 2, pack: n(f.pack) || rec.pack || '',
       });
       if (isNew) {
@@ -665,7 +728,11 @@ function lensForm(existing, prefill, onSaved) {
           rec.qty = Math.max(0, rec.qty - take);
           rec.pairs.push({ id: uid(), openedAt: f.openedAt || today(), soakAt: f.openedAt || today(), status: 'using', pieces: take });
         }
-      } else rec.qty = Math.max(0, Math.round(Number(f.qty) || 0));
+      } else {
+        rec.qty = Math.max(0, Math.round(Number(f.qty) || 0));
+        rec.boughtQty = f.boughtQty === '' || f.boughtQty == null ? '' : Math.max(0, Math.round(Number(f.boughtQty) || 0));
+      }
+      if (rec.price !== '') { S.settings.lastCur = rec.priceCur; saveSettings(); }
       await save('lenses', rec);
       await learn(rec);
       sh.close();
@@ -679,21 +746,28 @@ function lensForm(existing, prefill, onSaved) {
 
 function careForm(existing) {
   const isNew = !existing;
-  const f = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), type: 'solution', name: '', volume: '', price: '', expiry: '', opened: false, openedAt: today(), openDays: CARE_TYPES.solution.openDays, notes: '', photos: [] };
+  const f = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), type: 'solution', name: '', volume: '', price: '', priceCur: S.settings.lastCur || dispCur(), expiry: '', opened: false, openedAt: today(), openDays: CARE_TYPES.solution.openDays, qty: '', notes: '', photos: [] };
   if (existing) f.opened = !!existing.openedAt;
-  for (const k of ['name', 'volume', 'notes', 'expiry']) if (f[k] == null) f[k] = '';
+  for (const k of ['name', 'volume', 'notes', 'expiry', 'qty']) if (f[k] == null) f[k] = '';
   f.photos = f.photos || [];
   if (existing && !existing.openedAt) f.openedAt = today();
   const sh = sheet(isNew ? '添加护理品' : '编辑护理品', '', { foot: `${!isNew ? '<button class="btn ghost danger-t" data-f="del">删除</button>' : ''}<button class="btn primary grow" data-f="save">保存</button>` });
   const draw = () => {
     const ty = CARE_TYPES[f.type];
+    const drops = f.type === 'drops';
+    const daily = drops && Number(f.openDays) === 1;
+    const change = f.type === 'case' || f.type === 'tool';
     sh.body.innerHTML = `
       ${field('类型', `<div class="chips">${Object.entries(CARE_TYPES).map(([k, v]) => `<button type="button" class="chip ${f.type === k ? 'on' : ''}" data-f="type" data-v="${k}">${v.icon} ${v.label}</button>`).join('')}</div>`)}
-      ${field('名称', input('name', f.name, `placeholder="例如：博士伦 润明护理液 ${f.type === 'drops' ? '/ 乐敦 润眼液' : ''}"`))}
-      <div class="field two"><div><label>${f.type === 'case' || f.type === 'tool' ? '购买/到货日期' : '有效期（包装上的）'}</label>${input('expiry', f.expiry, 'type="date"')}</div><div><label>价格（${esc(S.settings.currency)}）</label>${input('price', f.price, 'inputmode="decimal"')}</div></div>
-      <div class="field"><label class="check"><input type="checkbox" name="opened" ${f.opened ? 'checked' : ''}> ${f.type === 'case' || f.type === 'tool' ? '已经开始使用' : '已经开封'}</label>
-      ${f.opened ? `<div class="two"><div><label>${f.type === 'case' || f.type === 'tool' ? '开始使用' : '开封日期'}</label>${input('openedAt', f.openedAt, 'type="date"')}</div><div><label>${f.type === 'case' || f.type === 'tool' ? '多少天换新' : '开封后可用（天）'}</label>${input('openDays', f.openDays, 'inputmode="numeric"')}</div></div>` : ''}
-      <small class="hint">${ty.openDays ? `${ty.label}一般${f.type === 'case' ? `每 ${ty.openDays} 天更换` : `开封后 ${ty.openDays} 天内用完`}，以说明书为准` : ''}</small></div>
+      ${field('名称', input('name', f.name, `placeholder="例如：${drops ? '乐敦 润眼液 / 海露' : '博士伦 润明护理液'}"`))}
+      ${drops ? field('使用周期', `<div class="chips">${DROP_CYCLES.map(([d, label]) => `<button type="button" class="chip ${Number(f.openDays) === d ? 'on' : ''}" data-f="dcycle" data-v="${d}">${label}</button>`).join('')}</div>`,
+        daily ? '日抛（单支装）：每支用一次就丢，按支数记录，用完或快过期时提醒' : `开封后 ${f.openDays} 天内用完，到期提醒你换新`) : ''}
+      ${field(change ? '购买/到货日期' : '有效期（包装上的）', input('expiry', f.expiry, 'type="date"'))}
+      ${daily ? field('数量（支）', input('qty', f.qty, 'inputmode="numeric" class="short" placeholder="30"'), '用一支点一下「用了一支」；剩 5 支时提醒补货')
+        : `<div class="field"><label class="check"><input type="checkbox" name="opened" ${f.opened ? 'checked' : ''}> ${change ? '已经开始使用' : '已经开封'}</label>
+      ${f.opened ? `<div class="two"><div><label>${change ? '开始使用' : '开封日期'}</label>${input('openedAt', f.openedAt, 'type="date"')}</div><div><label>${change ? '多少天换新' : '开封后可用（天）'}</label>${input('openDays', f.openDays, 'inputmode="numeric"')}</div></div>` : ''}
+      <small class="hint">${!drops && ty.openDays ? `${ty.label}一般${f.type === 'case' ? `每 ${ty.openDays} 天更换` : `开封后 ${ty.openDays} 天内用完`}，以说明书为准` : ''}</small></div>`}
+      ${priceField(f)}
       ${field('容量/规格', input('volume', f.volume, 'placeholder="360ml / 10ml"'))}
       ${field('照片', photoGrid(f.photos))}
       ${field('备注', `<textarea name="notes" rows="2">${esc(f.notes)}</textarea>`)}`;
@@ -704,13 +778,18 @@ function careForm(existing) {
     if (!b) return;
     syncForm(sh.el, f);
     const k = b.dataset.f;
-    if (k === 'type') { const was = CARE_TYPES[f.type].openDays; f.type = b.dataset.v; if (!f.openDays || Number(f.openDays) === was) f.openDays = CARE_TYPES[f.type].openDays; draw(); }
-    else if (k === 'photo') { f.photos.push(...(await photosFromPicker())); draw(); }
+    if (k === 'type') { const was = CARE_TYPES[f.type].openDays; f.type = b.dataset.v; if (!f.openDays || Number(f.openDays) === was || f.type === 'drops') f.openDays = CARE_TYPES[f.type].openDays; draw(); }
+    else if (k === 'dcycle') { f.openDays = Number(b.dataset.v); if (f.openDays > 1 && !f.opened) { f.opened = true; f.openedAt = f.openedAt || today(); } draw(); }
+    else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
     else if (k === 'del') { if (await ask('删除护理品', `确定删除「${f.name || CARE_TYPES[f.type].label}」吗？`, '删除', true)) { await remove('care', f.id); sh.close(); render(); } }
     else if (k === 'save') {
       const rec = existing ? { ...existing } : { id: f.id, createdAt: Date.now() };
-      Object.assign(rec, { type: f.type, name: f.name.trim(), volume: f.volume.trim(), price: f.price === '' ? '' : Number(f.price) || '', expiry: f.expiry, openedAt: f.opened ? f.openedAt || today() : '', openDays: f.opened ? Number(f.openDays) || 0 : Number(f.openDays) || CARE_TYPES[f.type].openDays, notes: f.notes.trim(), photos: f.photos });
+      const daily = f.type === 'drops' && Number(f.openDays) === 1;
+      Object.assign(rec, { type: f.type, name: f.name.trim(), volume: f.volume.trim(), price: f.price === '' ? '' : Number(f.price) || '', priceCur: curOf(f.priceCur), expiry: f.expiry,
+        openedAt: !daily && f.opened ? f.openedAt || today() : '', openDays: f.opened || daily ? Number(f.openDays) || 0 : Number(f.openDays) || CARE_TYPES[f.type].openDays,
+        qty: daily && f.qty !== '' ? Math.max(0, Math.round(Number(f.qty) || 0)) : '', notes: f.notes.trim(), photos: f.photos });
+      if (rec.price !== '') { S.settings.lastCur = rec.priceCur; saveSettings(); }
       await save('care', rec);
       sh.close();
       toast('已保存');
@@ -722,7 +801,7 @@ function careForm(existing) {
 
 function wishForm(existing) {
   const isNew = !existing;
-  const f = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), brand: '', series: '', color: '', cycle: '', tone: '', price: '', shop: '', link: '', priority: 2, photos: [], notes: '' };
+  const f = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), brand: '', series: '', color: '', cycle: '', tone: '', price: '', priceCur: S.settings.lastCur || dispCur(), shop: '', link: '', priority: 2, photos: [], notes: '' };
   for (const k of ['brand', 'series', 'color', 'cycle', 'shop', 'link', 'notes']) if (f[k] == null) f[k] = '';
   f.photos = f.photos || [];
   const sh = sheet(isNew ? '添加心愿' : '编辑心愿', '', { foot: `${!isNew ? '<button class="btn ghost danger-t" data-f="del">删除</button>' : ''}<button class="btn primary grow" data-f="save">保存</button>` });
@@ -733,9 +812,11 @@ function wishForm(existing) {
       ${field('花色', `<button type="button" class="pick" data-f="color">${f.color ? iris(f.tone) + esc(f.color) : '<span class="ph">选择或输入花色</span>'}<i>›</i></button>`)}
       ${field('想买的周期', `<div class="chips">${opts.map((k) => `<button type="button" class="chip ${f.cycle === k ? 'on' : ''}" data-f="cycle" data-v="${k}">${CYCLES[k].label}</button>`).join('')}</div>`)}
       ${field('色系', toneChips(f.tone || guessTone(f.color)))}
-      ${field('图片', photoGrid(f.photos), '存小红书/店铺的上眼图，方便对比')}
+      ${field('网图', photoGrid(f.photos, 'web', 'web'), '存小红书/店铺的上眼图，方便对比')}
+      ${f.photos.some((p) => kindOf(p, 'web') === 'mine') ? field('我的佩戴效果', photoGrid(f.photos, 'mine', 'web')) : ''}
       ${field('有多想要', `<div class="chips">${[1, 2, 3].map((p) => `<button type="button" class="chip ${Number(f.priority) === p ? 'on' : ''}" data-f="pri" data-v="${p}">${'♥'.repeat(p)}</button>`).join('')}</div>`)}
-      <div class="field two"><div><label>价格（${esc(S.settings.currency)}）</label>${input('price', f.price, 'inputmode="decimal"')}</div><div><label>在哪买</label>${input('shop', f.shop, 'placeholder="店铺名"')}</div></div>
+      ${priceField(f)}
+      ${field('在哪买', input('shop', f.shop, 'placeholder="店铺名"'))}
       ${field('链接', input('link', f.link, 'type="url" placeholder="商品或小红书链接"'))}
       ${field('备注', `<textarea name="notes" rows="2">${esc(f.notes)}</textarea>`)}`;
   };
@@ -752,13 +833,14 @@ function wishForm(existing) {
     } else if (k === 'cycle') { f.cycle = f.cycle === b.dataset.v ? '' : b.dataset.v; draw(); }
     else if (k === 'tone') { f.tone = b.dataset.v; draw(); }
     else if (k === 'pri') { f.priority = Number(b.dataset.v); draw(); }
-    else if (k === 'photo') { f.photos.push(...(await photosFromPicker())); draw(); }
+    else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
     else if (k === 'del') { if (await ask('删除心愿', '确定删除吗？', '删除', true)) { await remove('wish', f.id); sh.close(); render(); } }
     else if (k === 'save') {
       if (!f.brand && !f.color && !f.photos.length) { toast('至少选个品牌、花色或加张图'); return; }
       const rec = existing ? { ...existing } : { id: f.id, createdAt: Date.now() };
-      Object.assign(rec, { brand: f.brand, series: f.series, color: f.color, cycle: f.cycle, tone: f.tone || guessTone(f.color), price: f.price === '' ? '' : Number(f.price) || '', shop: f.shop.trim(), link: f.link.trim(), priority: Number(f.priority) || 0, photos: f.photos, notes: f.notes.trim() });
+      if (f.price !== '') { S.settings.lastCur = curOf(f.priceCur); saveSettings(); }
+      Object.assign(rec, { brand: f.brand, series: f.series, color: f.color, cycle: f.cycle, tone: f.tone || guessTone(f.color), price: f.price === '' ? '' : Number(f.price) || '', priceCur: curOf(f.priceCur), shop: f.shop.trim(), link: f.link.trim(), priority: Number(f.priority) || 0, photos: f.photos, notes: f.notes.trim() });
       await save('wish', rec);
       sh.close();
       toast('已加入心愿单 💗');
@@ -863,7 +945,7 @@ const ACTS = {
     render();
   },
   unarchive: async (d) => { const l = lensById(d.id); l.archived = false; l.archiveWhy = ''; await save('lenses', l); toast('已移回美瞳柜'); render(); },
-  rebuy: (d) => { const l = lensById(d.id); lensForm(null, { brand: l.brand, series: l.series, color: l.color, cycle: l.cycle, tone: l.tone, photos: (l.photos || []).slice(0, 1), shop: l.shop, price: l.price, perWear: l.perWear, soakDays: l.soakDays, powerL: l.powerL, powerR: l.powerR }); },
+  rebuy: (d) => { const l = lensById(d.id); lensForm(null, { brand: l.brand, series: l.series, color: l.color, cycle: l.cycle, tone: l.tone, photos: (l.photos || []).filter((p) => kindOf(p) === 'web').slice(0, 2), shop: l.shop, price: l.price, priceCur: curOf(l.priceCur), perWear: l.perWear, soakDays: l.soakDays, powerL: l.powerL, powerR: l.powerR }); },
   wear: (d) => startWear(d.id, d.pair),
   'wear-stop': () => stopWear(),
   'open-pair': async (d) => {
@@ -963,7 +1045,7 @@ const ACTS = {
   'inspo-img': (d) => viewPhoto(lensById(d.id).inspo[+d.i].img),
   'add-photo': async (d) => {
     const l = lensById(d.id);
-    const ph = await photosFromPicker();
+    const ph = await photosFromPicker(d.kind || 'mine');
     if (!ph.length) return;
     l.photos = (l.photos || []).concat(ph);
     await save('lenses', l);
@@ -977,7 +1059,7 @@ const ACTS = {
       ${field('截图（可选）', '<div class="pgrid" data-img><button type="button" class="pg add" data-pick>＋<small>截图</small></button></div>')}`, { cls: 'small', foot: '<button class="btn primary block" data-ok>保存</button>' });
     $('[data-pick]', sh.el).onclick = async () => {
       const ph = await photosFromPicker();
-      if (ph[0]) { f.img = ph[0].full; $('[data-img]', sh.el).innerHTML = `<div class="pg"><img src="${ph[0].thumb}" alt=""></div>`; }
+      if (ph[0]) { f.img = ph[0].full; $('[data-img]', sh.el).innerHTML = `<div class="pg"><img src="${photoSrc(ph[0])}" alt=""></div>`; }
     };
     $('[data-ok]', sh.el).onclick = async () => {
       syncForm(sh.el, f);
@@ -993,6 +1075,14 @@ const ACTS = {
   'del-inspo': async (d) => { const l = lensById(d.id); if (!(await ask('删除收藏', '确定删除这条灵感吗？', '删除', true))) return; l.inspo.splice(+d.i, 1); await save('lenses', l); render(); },
   'add-care': () => careForm(),
   'edit-care': (d) => careForm(S.care.find((c) => c.id === d.id)),
+  'drop-use': async (d) => {
+    const c = S.care.find((x) => x.id === d.id);
+    if (!c) return;
+    c.qty = Math.max(0, (Number(c.qty) || 0) - 1);
+    await save('care', c);
+    toast(c.qty ? `已记录，还剩 ${c.qty} 支` : '这盒用完了，记得补货');
+    render();
+  },
   'care-open': async (d) => { const c = S.care.find((x) => x.id === d.id); c.openedAt = today(); c.openDays = Number(c.openDays) || CARE_TYPES[c.type].openDays; await save('care', c); toast('已记录开封日期'); render(); },
   'care-done': async (d) => {
     const c = S.care.find((x) => x.id === d.id);
@@ -1011,11 +1101,10 @@ const ACTS = {
   },
   'care-restore': async (d) => { const c = S.care.find((x) => x.id === d.id); c.finished = false; await save('care', c); render(); },
   'add-wish': () => wishForm(),
-  'import-rem': () => importSheet(),
   'edit-wish': (d) => wishForm(S.wish.find((w) => w.id === d.id)),
   'wish-bought': (d) => {
     const w = S.wish.find((x) => x.id === d.id);
-    lensForm(null, { brand: w.brand, series: w.series, color: w.color, cycle: w.cycle, tone: w.tone, photos: w.photos || [], price: w.price, shop: w.shop, notes: w.notes }, async () => { await remove('wish', w.id); });
+    lensForm(null, { brand: w.brand, series: w.series, color: w.color, cycle: w.cycle, tone: w.tone, photos: (w.photos || []).map((p) => ({ ...p, kind: kindOf(p, 'web') })), price: w.price, priceCur: curOf(w.priceCur), shop: w.shop, notes: w.notes }, async () => { await remove('wish', w.id); });
   },
   snooze: async (d) => {
     S.settings.snooze[d.key] = Number(d.days) >= 9999 ? '9999-12-31' : addDays(today(), Number(d.days) || 0);
@@ -1023,17 +1112,29 @@ const ACTS = {
     render();
   },
   notify: async () => {
-    if (!('Notification' in window)) { toast(IOS ? '请先 Share → Add to Home Screen，再从主屏幕打开 Lensy 开启' : '这个浏览器不支持通知'); return; }
-    if (S.settings.notify && Notification.permission === 'granted') {
-      if (await ask('关闭通知', '关闭后打开 App 时不会再推送提醒。', '关闭')) { S.settings.notify = false; await saveSettings(); render(); }
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) { toast(IOS ? '请先 Share → Add to Home Screen，再从主屏幕打开 Lensy 开启' : '这个浏览器不支持通知'); return; }
+    if (S.settings.push && S.settings.push.on && Notification.permission === 'granted') {
+      if (await ask('关闭通知', '关闭后不会再收到 Lensy 的推送提醒。', '关闭')) { await pushOff(); render(); }
       return;
     }
+    // The permission prompt must come straight from the tap (iOS), before any network wait.
     const p = await Notification.requestPermission();
-    S.settings.notify = p === 'granted';
-    await saveSettings();
-    toast(p === 'granted' ? '通知已开启 🔔' : '没有获得通知权限，可以在 Settings › Notifications › Lensy 里打开');
+    if (p !== 'granted') { toast('没有获得通知权限，可以在 Settings › Notifications › Lensy 里打开'); return; }
+    S.settings.notify = true;
+    toast('正在开启…');
+    try {
+      await pushOn();
+      toast('通知已开启 🔔 App 关着也会提醒');
+    } catch (e) {
+      console.error(e);
+      await saveSettings();
+      toast('推送开启失败：' + (e.message || e) + '（只能在打开 App 时提醒）');
+    }
     render();
-    notifyDue();
+  },
+  'push-test': async (d, el) => {
+    el.disabled = true;
+    try { await pushCall('test'); toast('已发送，几秒内会收到 🔔'); } catch (e) { toast(e.message || String(e)); } finally { el.disabled = false; }
   },
   ics: () => calendarSheet(buildIcs(S, S.settings), 'lensy-提醒.ics'),
   backup: async () => {
@@ -1064,142 +1165,6 @@ const ACTS = {
   },
 };
 
-// ---------- import from Apple Reminders ----------
-const HOWTO = `<ol class="howto">
-  <li>打开 <b>Shortcuts</b> App，点右上角 <b>+</b> 新建，名字填 <b>Export to Lensy</b>。</li>
-  <li>点 <b>Search Actions</b>，添加 <b>Text</b>，里面填 <code>LENSY</code>。再添加 <b>Save File</b>：关掉 <b>Ask Where to Save</b>，<b>Subpath</b> 填 <code>Lensy.txt</code>，打开 <b>Overwrite If File Exists</b>。（每次运行先清空上次的文件）</li>
-  <li>添加 <b>Find Reminders</b> → 点 <b>Add Filter</b> → 设为 <b>List</b> <b>is</b> <b>眼珠珠</b>（换成你的清单名）。</li>
-  <li>添加 <b>Repeat with Each</b>，它会自动用上一步的 <b>Reminders</b>。</li>
-  <li>在 Repeat 里面添加 <b>Text</b>，照下面四行填写。〔 〕是变量：在键盘上方点 <b>Repeat Item</b> 插入，再点一下这个蓝色变量，选对应的项目（<b>Title</b> / <b>Notes</b> / <b>Is Completed</b>）：
-    <pre>@@ITEM
-@@TITLE 〔Repeat Item › Title〕
-@@NOTES 〔Repeat Item › Notes〕
-@@DONE 〔Repeat Item › Is Completed〕</pre></li>
-  <li>接着添加 <b>Append to Text File</b>：内容是上一步的 <b>Text</b>，文件选 <b>Shortcuts</b> 文件夹里的 <code>Lensy.txt</code>（File Path 填 <code>Lensy.txt</code>），打开 <b>Make New Line</b>。</li>
-  <li>还在 Repeat 里面，添加 <b>Get Details of Reminders</b>，点 <b>Detail</b> 选 <b>Images</b>，后面的对象选 <b>Repeat Item</b>。</li>
-  <li>再添加一个 <b>Repeat with Each</b>（对象是上一步的 <b>Images</b>），在它里面依次添加：
-    <b>Resize Image</b>（选 <b>Repeat Item 2</b>，Width 填 800）→ <b>Convert Image</b>（选 <b>JPEG</b>）→ <b>Base64 Encode</b>（点 <b>Show More</b>，<b>Line Breaks</b> 选 <b>None</b>）→ <b>Text</b> 填 <code>@@IMG 〔Base64 Encoded〕</code> → <b>Append to Text File</b>（和第 6 步一样：<code>Lensy.txt</code>，打开 <b>Make New Line</b>）。</li>
-  <li>结尾不用 Combine Text，也不用再 Save File。点右下角 ▶ 运行，跑完后回来点上面的「选择导出的文件」，在 <b>iCloud Drive › Shortcuts › Lensy.txt</b> 找到它（没开 iCloud Drive 的话在 <b>On My iPhone › Shortcuts</b>）。</li>
-</ol>
-<p class="muted sm">· 每处理一条就写进文件，不会因为照片太多而在最后出错（“There was a problem running the shortcut”）。<br>· 如果第 7 步的 <b>Detail</b> 里没有 <b>Images</b>，跳过第 7、8 步，只导入文字，照片之后在 Lensy 里补。<br>· 第一次运行时 iPhone 会问是否允许访问 Reminders 和文件，点 <b>Allow</b>。<br>· 以后清单有更新，再运行一次快捷指令、再导入即可，已有的会自动跳过。</p>`;
-
-function importSheet() {
-  const sh = sheet('从 Reminders 导入', `<p class="ask">网页 App 不能直接读取 Reminders，所以要先用一个 Shortcuts 快捷指令把清单和图片导出成文件（只需设置一次），再在这里选择那个文件。</p>
-    <button class="btn primary block" data-f="file">📄 选择导出的文件</button>
-    <details class="howto-box"><summary>第一次用？设置 Shortcuts 快捷指令（约 3 分钟）</summary>${HOWTO}</details>
-    <h4>或者直接粘贴文字（不含图片）</h4>
-    <textarea name="paste" rows="6" placeholder="拉拜诗 新晋 OL&#10;月&#10;Glam Up 琥珀光&#10;半&#10;愿望清单&#10;Neo 浪漫蓝调"></textarea>
-    <p class="muted sm">每行一个美瞳，下一行可以写周期（日 / 月 / 半 / 年）。“愿望清单”这一行以下的会放进心愿单。</p>
-    <button class="btn soft block" data-f="paste">识别粘贴的内容</button>`, { cls: 'small' });
-  const go = (text) => {
-    const items = parseExport(text);
-    if (!items.length) { toast('没有认出美瞳，检查一下文件或文字'); return; }
-    sh.close();
-    importPreview(items);
-  };
-  sh.el.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-f]');
-    if (!b) return;
-    if (b.dataset.f === 'file') {
-      const [file] = await pickFiles('.txt,.text,text/plain', false);
-      if (file) go(await readText(file));
-    } else go($('[name=paste]', sh.el).value);
-  });
-}
-
-const imgType = (b) => (b.startsWith('iVBOR') ? 'png' : b.startsWith('R0lG') ? 'gif' : b.startsWith('UklG') ? 'webp' : 'jpeg');
-const b64url = (b) => `data:image/${imgType(b)};base64,${b}`;
-
-function importPreview(items) {
-  const extra = [...new Set(S.lenses.map((l) => l.brand).concat(S.learned.map((l) => l.brand), S.wish.map((w) => w.brand)))];
-  const rows = toRows(items, { extraBrands: extra, existing: S.lenses, wishExisting: S.wish });
-  const sh = sheet(`导入预览（${rows.length} 项）`, '', { foot: '<button class="btn primary block" data-f="go"></button>' });
-  const btn = $('[data-f=go]', sh.el);
-  const label = () => {
-    const n = (d) => rows.filter((r) => r.dest === d).length;
-    btn.textContent = `导入 ${n('lens')} 个美瞳 · ${n('wish')} 个心愿`;
-    btn.disabled = !n('lens') && !n('wish');
-  };
-  const cycleSel = (r, i, allowNone) => `<select name="cycle" data-i="${i}" class="cyc">${allowNone ? `<option value="" ${!r.cycle ? 'selected' : ''}>周期未定</option>` : ''}${CYCLE_KEYS.map((k) => `<option value="${k}" ${r.cycle === k ? 'selected' : ''}>${CYCLES[k].label}</option>`).join('')}</select>`;
-  const draw = () => {
-    const y = sh.body.scrollTop;
-    sh.body.innerHTML = `<p class="muted sm">检查一下品牌和花色有没有拆对。写了周期的放进美瞳柜，没写的放进心愿单；已勾选的美瞳当作“用完了”存档。数量不确定就先估一个，之后随时改。</p>
-      ${rows.map((r, i) => `<div class="card irow ${r.dest}">
-        ${r.images.length ? `<div class="istrip">${r.images.slice(0, 5).map((b) => `<img src="${b64url(b)}" alt="">`).join('')}${r.images.length > 5 ? `<span>+${r.images.length - 5}</span>` : ''}</div>` : ''}
-        <div class="two tight"><input name="brand" data-i="${i}" value="${esc(r.brand)}" placeholder="品牌"><input name="color" data-i="${i}" value="${esc(r.color)}" placeholder="花色"></div>
-        <div class="chips">${[['lens', '美瞳柜'], ['wish', '心愿单'], ['skip', '跳过']].map(([k, n]) => `<button type="button" class="chip sm ${r.dest === k ? 'on' : ''}" data-f="dest" data-i="${i}" data-v="${k}">${n}</button>`).join('')}</div>
-        ${r.dest === 'lens' ? `<div class="iopts">${cycleSel(r, i)}<span><input name="qty" data-i="${i}" value="${r.qty}" inputmode="numeric" class="short"> 片</span>
-          ${r.done ? '<span class="tag st-done">已勾选 → 存档</span>' : `<label class="check"><input type="checkbox" name="opened" data-i="${i}" ${r.opened ? 'checked' : ''}> 正在用</label>`}</div>` : ''}
-        ${r.dest === 'wish' ? `<div class="iopts">${cycleSel(r, i, true)}</div>` : ''}
-        ${r.why ? `<small class="hint">${esc(r.why)}</small>` : ''}${r.notes ? `<small class="hint">备注：${esc(r.notes)}</small>` : ''}</div>`).join('')}`;
-    sh.body.scrollTop = y;
-    label();
-  };
-  const onEdit = (e) => {
-    const el = e.target.closest('[data-i][name]');
-    if (!el) return;
-    rows[+el.dataset.i][el.name] = el.type === 'checkbox' ? el.checked : el.value;
-  };
-  sh.el.addEventListener('input', onEdit);
-  sh.el.addEventListener('change', onEdit);
-  sh.el.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-f]');
-    if (!b) return;
-    if (b.dataset.f === 'dest') {
-      const r = rows[+b.dataset.i];
-      r.dest = b.dataset.v;
-      if (r.dest === 'lens' && !r.cycle) r.cycle = 'daily';
-      draw();
-      return;
-    }
-    if (b.dataset.f !== 'go' || btn.disabled) return;
-    btn.disabled = true;
-    const todo = rows.filter((r) => r.dest !== 'skip' && (r.brand.trim() || r.color.trim()));
-    let count = 0;
-    let lenses = 0;
-    for (const r of todo) {
-      btn.textContent = `正在导入 ${++count}/${todo.length}…`;
-      await importRow(r);
-      if (r.dest === 'lens') lenses++;
-    }
-    sh.close();
-    toast(`导入完成：${lenses} 个美瞳、${todo.length - lenses} 个心愿 ✨`);
-    location.hash = lenses ? '#lenses/using' : '#wish';
-    render();
-  });
-  draw();
-}
-
-async function importRow(r) {
-  const photos = [];
-  for (const b of r.images.slice(0, 8)) {
-    try { const img = await loadImg(b64url(b)); photos.push({ full: shrink(img, 1080, 0.82), thumb: shrink(img, 300, 0.8) }); } catch (e) { /* skip an unreadable picture */ }
-  }
-  const brand = r.brand.trim() || '未知品牌';
-  const color = r.color.trim();
-  const known = colorsFor(brand, S.learned).find((c) => c.name.toLowerCase() === color.toLowerCase());
-  const tone = known ? known.tone : guessTone(color);
-  if (r.dest === 'wish') {
-    await save('wish', { id: uid(), createdAt: Date.now(), brand, series: '', color, cycle: r.cycle || '', tone, price: '', shop: '', link: '', priority: 2, photos, notes: r.notes, source: 'reminders' });
-    return;
-  }
-  const cycle = r.cycle || 'daily';
-  const sp = specFor(brand, color, cycle, S.learned) || {};
-  const val = (v) => (v == null ? '' : v);
-  const qty = Math.max(0, Math.round(Number(r.qty) || 0));
-  const rec = {
-    id: uid(), createdAt: Date.now(), pairs: [], inspo: [], brand, series: known ? known.series : '', color, cycle, tone,
-    dia: val(sp.dia), gdia: val(sp.gdia), bc: val(sp.bc), water: val(sp.water), powerL: S.settings.powerL, powerR: S.settings.powerR,
-    expiry: '', buyDate: '', price: '', shop: '', photos, notes: r.notes, soakDays: '', perWear: 2, pack: sp.pack || CYCLES[cycle].pack,
-    qty, boughtQty: qty, wearCount: 0, source: 'reminders',
-  };
-  if (r.done) { rec.archived = true; rec.archiveWhy = '用完了'; rec.qty = 0; }
-  else if (r.opened && isLong(cycle)) openPairRec(rec, today());
-  else if (r.opened) rec.wearCount = 1;
-  await save('lenses', rec);
-  await learn(rec);
-}
-
 function viewPhoto(src) {
   const sh = sheet('', `<img class="full" src="${src}" alt="">`, { cls: 'photo' });
   sh.body.addEventListener('click', () => sh.close());
@@ -1221,10 +1186,77 @@ function calendarSheet(ics, name, gcal) {
   });
 }
 
-// ---------- notifications & badge ----------
+// ---------- phone notifications (push) ----------
+// The phone sends its upcoming reminders (times + text only) to the Lensy Push server, which pushes
+// each one when it is due — also while the app is closed. The service worker (sw.js) fetches the text
+// from the server's inbox with this phone's id + secret, kept in the Cache "lensy-push" for it.
+const b64Bytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
+const bytesB64 = (buf) => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/[+]/g, '-').replace(/[/]/g, '_').replace(/=+$/, '');
+const randomId = (n) => bytesB64(crypto.getRandomValues(new Uint8Array(n)));
+
+async function pushPost(body) {
+  const res = await fetch(PUSH_API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+  const out = await res.json();
+  if (!out.ok) throw new Error(out.error || '服务器出错');
+  return out.result;
+}
+const pushCall = (fn, extra) => pushPost({ fn, id: S.settings.push.id, secret: S.settings.push.secret, ...(extra || {}) });
+
+async function pushOn() {
+  const reg = await navigator.serviceWorker.ready;
+  const key = await pushPost({ fn: 'key' });
+  let sub = await reg.pushManager.getSubscription();
+  const subKey = sub && sub.options && sub.options.applicationServerKey;
+  if (sub && subKey && bytesB64(subKey) !== key) { await sub.unsubscribe(); sub = null; }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64Bytes(key) });
+  const cfg = S.settings.push && S.settings.push.id ? S.settings.push : { id: 'p' + randomId(15), secret: randomId(24) };
+  S.settings.push = { ...cfg, on: true };
+  await DB.put('kv', { id: 'settings', value: S.settings });
+  await pushConfigForSW();
+  await pushCall('sync', { endpoint: sub.endpoint, items: pushSchedule(S, S.settings) });
+}
+
+async function pushOff() {
+  try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* ignore */ }
+  try { if (S.settings.push) await pushCall('off'); } catch (e) { /* offline: the server forgets it after 120 days */ }
+  S.settings.push = null;
+  S.settings.notify = false;
+  await DB.put('kv', { id: 'settings', value: S.settings });
+  try { await caches.delete('lensy-push'); } catch (e) { /* ignore */ }
+}
+
+async function pushConfigForSW() {
+  if (!('caches' in window) || !S.settings.push) return;
+  const c = await caches.open('lensy-push');
+  await c.put('push-config', new Response(JSON.stringify({ api: PUSH_API, id: S.settings.push.id, secret: S.settings.push.secret })));
+}
+
+// Re-sends the schedule a moment after any change (and when the app opens or comes back).
+let pushTimer = null;
+let lastPushed = '';
+function pushSoon(delay) {
+  if (!S.settings.push || !S.settings.push.on) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushSync, delay == null ? 1500 : delay);
+}
+async function pushSync() {
+  if (!S.settings.push || !S.settings.push.on || !navigator.onLine) return;
+  const items = pushSchedule(S, S.settings);
+  const sig = JSON.stringify(items);
+  if (sig === lastPushed) return;
+  try {
+    let endpoint;
+    try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); endpoint = sub ? sub.endpoint : ''; } catch (e) { /* keep the saved one */ }
+    await pushCall('sync', endpoint === undefined ? { items } : { endpoint, items });
+    lastPushed = sig;
+  } catch (e) { console.warn('push sync failed', e); }
+}
+
+// ---------- badge & in-app notifications ----------
 async function notifyDue() {
   const rs = reminders(S, S.settings).filter((r) => r.level === 'overdue' || r.level === 'due');
   try { if (navigator.setAppBadge) { if (rs.length) navigator.setAppBadge(rs.length); else navigator.clearAppBadge(); } } catch (e) { /* not supported */ }
+  if (S.settings.push && S.settings.push.on) return; // the push server sends them
   if (!S.settings.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
   const t = today();
   const fresh = rs.filter((r) => S.settings.notified[r.key] !== t);
@@ -1273,12 +1305,18 @@ document.addEventListener('change', async (e) => {
   S.settings[k] = el.type === 'number' ? Math.max(Number(el.min) || 0, Number(el.value) || DEFAULT_SETTINGS[k]) : el.value.trim() || DEFAULT_SETTINGS[k];
   await saveSettings();
   toast('已保存');
+  if (k === 'currency') render();
 });
 window.addEventListener('hashchange', render);
 // No zooming. Double-tap zoom is turned off by touch-action in app.css; iOS ignores user-scalable=no,
 // so pinch gestures are stopped here too (except in the full-screen photo viewer).
 document.addEventListener('gesturestart', (e) => { if (!(e.target.closest && e.target.closest('.sheet.photo'))) e.preventDefault(); }, { passive: false });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('.sheet-wrap')) render(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  checkUpdate();
+  pushSoon(300);
+  if (!$('.sheet-wrap')) render();
+});
 setInterval(() => {
   $$('[data-since]').forEach((el) => { el.textContent = dur(Date.now() - new Date(el.dataset.since)); });
   if (S.settings.wearing) notifyDue();
@@ -1288,8 +1326,36 @@ async function start() {
   try { await load(); } catch (e) { $('#view').innerHTML = `<div class="empty">无法打开本地资料库：${esc(e.message)}<br>如果在无痕模式，请换普通模式打开。</div>`; return; }
   render();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.__lensy = { S, render, reload: async () => { await load(); render(); } }; // for tests
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(() => checkUpdate()).catch(() => {});
+    // A new version took over: reload to it now, or as soon as no form is open.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) { hadController = true; return; } // first install, nothing to reload
+      reloadWhenIdle();
+    });
+    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'open' && e.data.url) location.hash = e.data.url.split('#')[1] || 'home'; });
+  }
+  if (S.settings.push && S.settings.push.on) { pushConfigForSW().catch(() => {}); pushSoon(800); }
+  window.__lensy = { S, render, reload: async () => { await load(); render(); }, pushSchedule: () => pushSchedule(S, S.settings) }; // for tests
   document.documentElement.dataset.ready = '1';
 }
+
+// ---------- updates ----------
+// Every open (and every return to the app) asks for the latest sw.js; a new version installs in the
+// background, takes over (skipWaiting in sw.js) and the page reloads into it.
+let hadController = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+let lastCheck = 0;
+async function checkUpdate() {
+  if (!('serviceWorker' in navigator) || Date.now() - lastCheck < 10000) return;
+  lastCheck = Date.now();
+  try { const reg = await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } catch (e) { /* offline */ }
+}
+function reloadWhenIdle() {
+  if (reloadWhenIdle.done) return;
+  if ($('.sheet-wrap')) { setTimeout(reloadWhenIdle, 1500); return; } // don't lose a form being filled in
+  reloadWhenIdle.done = true;
+  try { sessionStorage.setItem('lensy-updated', '1'); } catch (e) { /* ignore */ }
+  location.reload();
+}
+try { if (sessionStorage.getItem('lensy-updated')) { sessionStorage.removeItem('lensy-updated'); setTimeout(() => toast(`已更新到最新版 v${VERSION} ✨`), 600); } } catch (e) { /* ignore */ }
 start();

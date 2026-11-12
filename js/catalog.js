@@ -1,6 +1,7 @@
 // Built-in brand / series / colour reference data.
-// Specs are typical published values for each series (reference only — the box label always wins).
-// Every lens the user saves is also learned into the "my catalogue" store, so autofill gets better with use.
+// Only specs that were checked against the brand's own product pages are filled in (series marked
+// `verified`, with the source in `src`). Everything else is left blank on purpose: a wrong number is
+// worse than none. Whatever the user types is learned (store "learned") and fills in next time.
 
 export const CYCLES = {
   daily: { label: '日抛', days: 1, pack: 10 },
@@ -53,7 +54,7 @@ export const BRANDS = [
     id: 'acuvue', name: '安视优', en: 'ACUVUE', origin: '美国 · 强生',
     series: [
       {
-        name: 'DEFINE 美瞳', cycles: { daily: S(14.2, 8.5, 58), '2week': S(14.0, 8.5, 58) }, packs: { daily: 30 },
+        name: 'DEFINE 美瞳', verified: true, src: 'ACUVUE 官网', cycles: { daily: S(14.2, 8.5, 58), '2week': S(14.0, 8.5, 58) }, packs: { daily: 30 },
         colors: [
           ['Natural Shine 自然亮棕', 'brown', ['daily', '2week']],
           ['Vivid Style 活力棕', 'brown', ['daily', '2week']],
@@ -70,19 +71,15 @@ export const BRANDS = [
     id: 'freshkon', name: 'FreshKon', en: 'FreshKon', origin: '新加坡 · 马来西亚常见',
     series: [
       {
-        name: 'Colors Fusion', cycles: { daily: S(14.2, 8.5, 58, 13.3), monthly: S(14.2, 8.6, 55, 13.3) },
+        name: 'Colors Fusion', verified: true, src: 'freshkon.com', cycles: { daily: S(14.2, 8.5, 58), monthly: S(14.2, 8.6, 55) }, packs: { daily: 30, monthly: 2 },
         colors: [
-          ['Blushing Velvet', 'pink'], ['Brilliant Brown', 'brown'], ['Shimmering Grey', 'grey'],
-          ['Perky Brown', 'brown'], ['Misty Grey', 'grey'], ['Warm Hazel', 'amber'],
+          ['Blushing Violet', 'purple'], ['Shimmering Grey', 'grey'], ['Brilliant Brown', 'brown'],
+          ['Warm Hazel', 'amber', ['monthly']], ['Misty Grey', 'grey', ['monthly']], ['Perky Brown', 'brown', ['monthly']], ['Glinting Brown', 'brown', ['monthly']],
         ],
       },
       {
-        name: 'Alluring Eyes', cycles: { daily: S(14.2, 8.5, 58, 13.3), monthly: S(14.2, 8.6, 55, 13.3) },
-        colors: [['Mystical Black', 'black'], ['Winsome Brown', 'brown'], ['Charming Grey', 'grey']],
-      },
-      {
-        name: 'Mosaic', cycles: { monthly: S(14.2, 8.6, 55) },
-        colors: [['Charcoal Grey', 'grey'], ['Honey Brown', 'amber'], ['Steel Blue', 'blue']],
+        name: 'Alluring Eyes', verified: true, src: 'freshkon.com', cycles: { daily: S(14.2, 8.5, 58), monthly: S(14.2, 8.6, 55) }, packs: { daily: 30, monthly: 2 },
+        colors: [['Mystical Black', 'black'], ['Majestic Brown', 'brown'], ['Magnetic Grey', 'grey'], ['Winsome Brown', 'brown']],
       },
     ],
   },
@@ -90,7 +87,7 @@ export const BRANDS = [
     id: 'bausch', name: '博士伦', en: 'Bausch+Lomb', origin: '美国',
     series: [
       {
-        name: '蕾丝明眸 Lacelle', cycles: { daily: S(14.0, 8.6, 59), monthly: S(14.0, 8.6, 38) },
+        name: '蕾丝明眸 Lacelle', cycles: { daily: null, monthly: null },
         colors: [['Jewel Black 闪钻黑', 'black'], ['Glam Brown 魅惑棕', 'brown'], ['Gold Brown 金棕', 'amber']],
       },
     ],
@@ -99,7 +96,7 @@ export const BRANDS = [
     id: 'moody', name: 'Moody', en: 'moody', origin: '中国',
     series: [
       {
-        name: 'Moody 美瞳', cycles: { daily: S(14.2, 8.6, 38, 13.6), monthly: S(14.2, 8.6, 38, 13.6), quarterly: S(14.2, 8.6, 38, 13.6), halfyear: S(14.2, 8.6, 38, 13.6) },
+        name: 'Moody 美瞳', cycles: { daily: null, monthly: null, quarterly: null, halfyear: null },
         colors: [
           ['丝绒棕', 'brown', ['daily']], ['冷茶棕', 'brown', ['daily']], ['积雨云', 'grey', ['daily']],
           ['冷泡乌龙茶', 'brown', ['halfyear']], ['姜饼果子', 'amber', ['halfyear']],
@@ -109,41 +106,41 @@ export const BRANDS = [
   },
   {
     id: 'kilala', name: '可啦啦', en: 'Kilala', origin: '中国',
-    series: [{ name: '可啦啦 美瞳', cycles: { daily: S(14.2, 8.6, 38), halfyear: S(14.2, 8.6, 38), yearly: S(14.2, 8.6, 38) }, colors: [] }],
+    series: [{ name: '可啦啦 美瞳', cycles: { daily: null, halfyear: null, yearly: null }, colors: [] }],
   },
   {
     id: '4inlook', name: '4iNLOOK', en: '4inlook', origin: '韩国',
-    series: [{ name: '4iNLOOK 美瞳', cycles: { daily: S(14.2, 8.6, 38), monthly: S(14.2, 8.6, 38), halfyear: S(14.2, 8.6, 38) }, colors: [] }],
+    series: [{ name: '4iNLOOK 美瞳', cycles: { daily: null, monthly: null, halfyear: null }, colors: [] }],
   },
   {
     id: 'lapeche', name: '拉拜诗', en: 'Lapeche', origin: '中国',
-    series: [{ name: '拉拜诗 美瞳', cycles: { daily: S(14.2, 8.6, 38), monthly: S(14.2, 8.6, 38), halfyear: S(14.2, 8.6, 38) }, colors: [['新晋 OL', 'brown', ['monthly']], ['好运女孩', 'brown', ['daily']], ['满分团宠', 'brown', ['monthly']], ['一克霓虹', 'mixed'], ['珍珠引力', 'grey'], ['仲夏夜', 'blue']] }],
+    series: [{ name: '拉拜诗 美瞳', cycles: { daily: null, monthly: null, halfyear: null }, colors: [['新晋 OL', 'brown', ['monthly']], ['好运女孩', 'brown', ['daily']], ['满分团宠', 'brown', ['monthly']], ['一克霓虹', 'mixed'], ['珍珠引力', 'grey'], ['仲夏夜', 'blue']] }],
   },
   {
     id: 'hapakristin', name: 'Hapa Kristin', en: 'Hapa Kristin', origin: '韩国',
     series: [
-      { name: 'Pony Kristin', cycles: { daily: S(14.2, 8.7, 45), monthly: S(14.2, 8.6, 45) }, colors: [] },
-      { name: 'Cat-titude Kristin', cycles: { daily: S(14.2, 8.7, 45), monthly: S(14.2, 8.6, 45) }, colors: [] },
+      { name: 'Pony Kristin', cycles: { daily: null, monthly: null }, colors: [] },
+      { name: 'Cat-titude Kristin', cycles: { daily: null, monthly: null }, colors: [] },
     ],
   },
   {
     id: 'olens', name: 'OLENS', en: 'OLENS', origin: '韩国',
     series: [
-      { name: 'Russian Velvet', cycles: { daily: S(14.2, 8.6, 42), monthly: S(14.2, 8.6, 42) }, colors: [['Russian Velvet Brown', 'brown'], ['Russian Velvet Grey', 'grey']] },
-      { name: 'Real Ring', cycles: { daily: S(14.0, 8.6, 42), monthly: S(14.0, 8.6, 42) }, colors: [['Real Ring Black', 'black'], ['Real Ring Brown', 'brown']] },
+      { name: 'Russian Velvet', cycles: { daily: null, monthly: null }, colors: [['Russian Velvet Brown', 'brown'], ['Russian Velvet Grey', 'grey']] },
+      { name: 'Real Ring', cycles: { daily: null, monthly: null }, colors: [['Real Ring Black', 'black'], ['Real Ring Brown', 'brown']] },
     ],
   },
   {
     id: 'lensme', name: 'Lensme', en: 'Lensme', origin: '韩国',
-    series: [{ name: 'Lensme 美瞳', cycles: { daily: S(14.2, 8.6, 42), monthly: S(14.2, 8.6, 42) }, colors: [] }],
+    series: [{ name: 'Lensme 美瞳', cycles: { daily: null, monthly: null }, colors: [] }],
   },
   {
     id: 'ttdeye', name: 'TTDeye', en: 'TTDeye', origin: '中国 · 海外站',
-    series: [{ name: 'TTDeye 美瞳', cycles: { daily: S(14.2, 8.6, 38), yearly: S(14.2, 8.6, 38) }, colors: [] }],
+    series: [{ name: 'TTDeye 美瞳', cycles: { daily: null, yearly: null }, colors: [] }],
   },
   {
     id: 'hydron', name: '海昌', en: 'Hydron', origin: '中国',
-    series: [{ name: '海昌 星眸', cycles: { daily: S(14.0, 8.6, 38), monthly: S(14.0, 8.6, 38), halfyear: S(14.0, 8.6, 38) }, colors: [] }],
+    series: [{ name: '海昌 星眸', cycles: { daily: null, monthly: null, halfyear: null }, colors: [] }],
   },
   // Brands without checked specs: listed so titles split correctly and the picker offers them; specs come from what the user types.
   { id: 'glamup', name: 'Glam Up', en: 'Glam Up', origin: '彩瞳品牌', series: [{ name: 'Glam Up', cycles: { daily: null, monthly: null, halfyear: null, yearly: null }, colors: [['琥珀光', 'amber', ['halfyear']], ['碎云母', 'grey', ['daily']], ['焦糖美式', 'amber', ['halfyear']]] }] },
@@ -151,7 +148,7 @@ export const BRANDS = [
   { id: 'neo', name: 'Neo', en: 'NEO', origin: '韩国', series: [{ name: 'Neo', cycles: { daily: null, monthly: null, halfyear: null, yearly: null }, colors: [['浪漫蓝调', 'blue'], ['鸢尾手记', 'purple']] }] },
   {
     id: 'clear', name: '透明片', en: 'Clear', origin: '通用',
-    series: [{ name: '透明隐形眼镜', cycles: { daily: S(14.2, 8.6, 58), '2week': S(14.0, 8.5, 58), monthly: S(14.2, 8.6, 38) }, colors: [['透明', 'clear']] }],
+    series: [{ name: '透明隐形眼镜', cycles: { daily: null, '2week': null, monthly: null }, colors: [['透明', 'clear']] }],
   },
 ];
 
@@ -168,7 +165,8 @@ export function colorsFor(brandName, learned) {
   if (b) {
     for (const se of b.series) {
       for (const [name, tone, cyc, gdia] of se.colors) {
-        const cycles = cyc || Object.keys(se.cycles);
+        // Unchecked series don't really know their cycles, so every cycle is offered.
+        const cycles = cyc || (se.verified ? Object.keys(se.cycles) : CYCLE_KEYS.slice());
         out.push({ name, tone, series: se.name, cycles, gdia: gdia || null, builtIn: true });
         seen.add(name.toLowerCase());
       }
@@ -199,13 +197,14 @@ export function specFor(brandName, colorName, cycle, learned, seriesName) {
     const se = b.series.find((x) => x.name === (color ? color.series : seriesName) && x.cycles[cycle])
       || b.series.find((x) => x.cycles[cycle]);
     if (se) {
-      base = { ...se.cycles[cycle] };
+      base = { ...se.cycles[cycle], src: se.src || '' };
       if (color && color.gdia) base.gdia = color.gdia;
       if (se.packs && se.packs[cycle]) pack = se.packs[cycle];
     }
   }
   if (mine && [mine.dia, mine.gdia, mine.bc, mine.water].some((v) => v !== '' && v != null)) return { dia: mine.dia, gdia: mine.gdia, bc: mine.bc, water: mine.water, pack: mine.pack || pack, from: 'mine' };
   if (base) return { ...base, gdia: base.gdia || null, pack, from: 'ref' };
+  if (b) return { dia: null, gdia: null, bc: null, water: null, pack, from: 'none' };
   return null;
 }
 
@@ -216,7 +215,7 @@ export function cyclesFor(brandName, colorName, learned, seriesName) {
   if (b) {
     const se = b.series.find((x) => x.name === seriesName) || null;
     const all = new Set();
-    for (const s of se ? [se] : b.series) Object.keys(s.cycles).forEach((k) => all.add(k));
+    for (const s of se ? [se] : b.series) (s.verified ? Object.keys(s.cycles) : CYCLE_KEYS).forEach((k) => all.add(k));
     return CYCLE_KEYS.filter((k) => all.has(k));
   }
   return CYCLE_KEYS;
@@ -225,9 +224,27 @@ export function cyclesFor(brandName, colorName, learned, seriesName) {
 export const CARE_TYPES = {
   solution: { label: '护理液', icon: '🧴', openDays: 90 },
   peroxide: { label: '双氧水护理液', icon: '🫧', openDays: 90 },
-  drops: { label: '眼药水/润眼液', icon: '💧', openDays: 28 },
-  single: { label: '单支装润眼液', icon: '💧', openDays: 1 },
+  drops: { label: '眼药水/润眼液', icon: '💧', openDays: 1 },
   case: { label: '镜盒', icon: '🫙', openDays: 90 },
   tool: { label: '镊子/吸棒', icon: '🥢', openDays: 180 },
   other: { label: '其他', icon: '✨', openDays: 0 },
 };
+// Eye drops come in different use cycles; 1 = 日抛 (single-use vials: counted, not "opened").
+export const DROP_CYCLES = [[1, '日抛（单支）'], [7, '7 天'], [14, '14 天'], [28, '28 天'], [30, '1 个月'], [90, '3 个月'], [180, '6 个月']];
+export const isDailyDrops = (c) => c && c.type === 'drops' && Number(c.openDays) === 1;
+// Old records: "single" (单支装润眼液) is now daily eye drops.
+export function fixCare(c) {
+  if (c && c.type === 'single') { c.type = 'drops'; c.openDays = 1; }
+  return c;
+}
+
+// Prices can be typed in any of these; totals are shown in the currency chosen in 我的.
+export const CURRENCIES = {
+  MYR: { label: 'RM', name: '马币 MYR', toMYR: 1 },
+  CNY: { label: '¥', name: '人民币 CNY', toMYR: 0.6 },
+  AUD: { label: 'A$', name: '澳币 AUD', toMYR: 2.8 },
+};
+export const CUR_KEYS = Object.keys(CURRENCIES);
+export const curOf = (c) => (CURRENCIES[c] ? c : 'MYR');
+// Converts an amount between currencies via MYR (CNY × 0.6 = MYR, AUD × 2.8 = MYR).
+export const convert = (amount, from, to) => ((Number(amount) || 0) * CURRENCIES[curOf(from)].toMYR) / CURRENCIES[curOf(to)].toMYR;

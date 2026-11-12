@@ -43,7 +43,7 @@ const data = {
     { id: 'w4', lensId: 'L3', pairId: 'P3', date: addDays(T, -3), hours: 10 },
   ],
   learned: [],
-  kv: [{ id: 'settings', value: { currency: 'RM', wearing: { lensId: 'L1', pairId: 'P1', start: new Date(Date.now() - 9.5 * 3600000).toISOString(), wearId: 'w1' } } }],
+  kv: [{ id: 'settings', value: { currency: 'MYR', wearing: { lensId: 'L1', pairId: 'P1', start: new Date(Date.now() - 9.5 * 3600000).toISOString(), wearId: 'w1' } } }],
 };
 
 // Runs in the page: every visible text node must sit inside its nearest box and inside the screen.
@@ -78,6 +78,19 @@ const CHECK = `(() => {
     }
   }
   if (document.documentElement.scrollWidth > W + 1) bad.push('page scrolls sideways (' + document.documentElement.scrollWidth + ' > ' + W + ')');
+  // nothing may scroll sideways (no left/right swiping anywhere)
+  for (const e of document.querySelectorAll('body *')) {
+    if (e.closest('.sheet-closing') || !e.getClientRects().length) continue;
+    const s = getComputedStyle(e);
+    if (/(auto|scroll)/.test(s.overflowX) && e.scrollWidth > e.clientWidth + 1) { bad.push('scrolls sideways: ' + e.tagName.toLowerCase() + '.' + e.className); break; }
+  }
+  // every field stays inside its column (iPhone date boxes used to overlap the field next to them)
+  for (const e of document.querySelectorAll('input:not([type=checkbox]), select, textarea')) {
+    if (!e.getClientRects().length || e.closest('.sheet-closing')) continue;
+    const r = e.getBoundingClientRect();
+    const p = e.parentElement.getBoundingClientRect();
+    if (r.right > p.right + 1 || r.left < p.left - 1) { bad.push('field wider than its column: ' + (e.name || e.className || e.type)); break; }
+  }
   return bad;
 })()`;
 
@@ -110,13 +123,14 @@ try {
 
   // zoom is off
   assert.ok((await js('document.querySelector("meta[name=viewport]").content')).includes('user-scalable=no'));
-  assert.equal(await js('getComputedStyle(document.documentElement).touchAction'), 'manipulation');
-  assert.equal(await js('getComputedStyle(document.querySelector(".tabs a")).touchAction'), 'manipulation');
+  assert.equal(await js('getComputedStyle(document.documentElement).touchAction'), 'pan-y');
+  assert.equal(await js('getComputedStyle(document.querySelector(".tabs a")).touchAction'), 'pan-y');
+  assert.equal(await js('getComputedStyle(document.documentElement).scrollbarWidth'), 'none', 'no scrollbars');
   await tap('.tabs .plus'); await tap('.choices .btn', '添加美瞳'); await sleep(250);
   const small = await js('[...document.querySelectorAll(".sheet-wrap input, .sheet-wrap select, .sheet-wrap textarea")].filter((e) => parseFloat(getComputedStyle(e).fontSize) < 16).length');
   assert.equal(small, 0, 'fields under 16px make iOS zoom in on tap');
   await closeAll();
-  console.log('  ✓ zoom off: viewport, touch-action, 16px fields');
+  console.log('  ✓ zoom and sideways swiping off: viewport, touch-action pan-y, 16px fields, no scrollbars');
 
   for (width of WIDTHS) {
     await ph.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 2, mobile: true });
@@ -139,15 +153,13 @@ try {
     await tap('[data-act=pair-cal]'); await sleep(250); await check('pair calendar sheet'); await closeAll();
     await go('#lenses/care');
     await tap('[data-act=edit-care]'); await sleep(250); await check('care form'); await closeAll();
+    await tap('.tabs .plus'); await tap('.choices .btn', '护理液'); await sleep(250); await tap('[data-f=type]', '眼药水'); await sleep(150); await check('daily eye drops form');
+    await tap('[data-f=dcycle]', '28 天'); await sleep(150); await check('28-day eye drops form'); await closeAll();
     await go('#wish');
     await tap('[data-act=edit-wish]'); await sleep(250); await check('wish form'); await closeAll();
     await go('#me');
     await tap('[data-act=ics]'); await sleep(250); await check('calendar sheet'); await closeAll();
-    await tap('[data-act=import-rem]'); await sleep(250);
-    await js('document.querySelector(".howto-box").open = true');
-    await check('import sheet with Shortcut steps');
-    await js(`(() => { const t = document.querySelector('.sheet-wrap [name=paste]'); t.value = ${JSON.stringify('一个非常非常长的自定义品牌名字Brand ' + LONG + '\n月\n✓ 拉拜诗 新晋 OL\n半\n愿望清单\nNeo 浪漫蓝调超长超长超长超长超长超长超长')}; })()`);
-    await tap('[data-f=paste]'); await sleep(300); await check('import preview'); await closeAll();
+
     if (width === 320) { await go('#home'); await shot('320-home'); await go('#lens/L1'); await shot('320-detail'); }
   }
   await shot('done');

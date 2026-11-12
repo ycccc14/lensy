@@ -195,19 +195,19 @@ try {
   await js('new Promise((r) => { const c = document.createElement("canvas"); c.width = 400; c.height = 1200; c.getContext("2d").fillRect(0, 0, 400, 1200); const i = document.querySelector(".wimg img"); i.onload = r; i.src = c.toDataURL(); })');
   assert.equal(await js(wimgRatio), 1.33, 'tall wishlist pictures are cropped to 4:3');
   await go('#home'); await go('#wish'); await until('document.querySelector(".wimg img")', 'wish card again');
-  // Long-press a picture: Lensy's own viewer opens (not the edit form) and closes back into the card.
+  // Long-press a picture: a preview pops up while the finger is down (not the edit form),
+  // and goes back into the card as soon as the finger lifts.
   const c0 = await js('(() => { const r = document.querySelector(".wimg img").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()');
   await ph.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [c0] });
-  await sleep(650);
+  await until('document.querySelector(".pv.peek")', 'preview from long-press');
+  await sleep(500);
+  await shot('06b-peek');
+  assert.ok(await js('(() => { const r = document.querySelector(".pv-img").getBoundingClientRect(); return r.width > 300 && r.width < 390; })()'), 'preview is big but leaves the page visible around it');
+  assert.ok(!(await js('!!document.querySelector(".pv-x")')), 'a preview has no close button: lifting the finger closes it');
   await ph.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await until('document.querySelector(".pv")', 'photo viewer from long-press');
-  await sleep(400);
+  await until('!document.querySelector(".pv") && document.querySelector(".wimg img").style.visibility === ""', 'preview gone on release, card picture back');
+  await sleep(300);
   assert.equal(await sheetCount(), 0, 'long-press does not also open the wish form');
-  assert.ok(await js('(() => { const r = document.querySelector(".pv-img").getBoundingClientRect(); return r.width > 300; })()'), 'picture shown big');
-  await sleep(300); // a person looks at it before tapping to close
-  await js('document.querySelector(".pv").click()');
-  await until('!document.querySelector(".pv") && document.querySelector(".wimg img").style.visibility === ""', 'viewer closed, card picture back');
-  assert.equal(await sheetCount(), 0);
   assert.ok((await js('document.querySelector(".wgrid").innerText')).includes('¥ 89'));
   assert.ok((await js('document.querySelector(".top").innerText')).includes('RM 53.4'), 'total converted to MYR (89 × 0.6)');
   await shot('06-wish');

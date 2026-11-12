@@ -4,7 +4,7 @@ import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, 
 import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
 import { suggest, xhsApp, xhsWeb } from './style.js';
 
-const VERSION = '1.3.1';
+const VERSION = '1.3.2';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
@@ -1162,30 +1162,38 @@ const ACTS = {
   },
 };
 
-// Full-screen photo viewer. The picture grows out of `from` (the thumbnail that was tapped or long-pressed)
-// and shrinks back into it on close, cropped the same way the thumbnail is (object-fit: cover).
-// Only transform / opacity / clip-path are animated, so nothing on the page has to re-layout.
+// Photo zoom, two kinds:
+//   viewPhoto(src, from)  tap → full-screen viewer on black, tap again to close.
+//   peekPhoto(src, from)  long-press → iOS / Instagram style preview: the picture pops up over the blurred
+//                          page while the finger is down; peek.close() on release shrinks it back.
+// The picture grows out of `from` (the thumbnail) and shrinks back into it, cropped the way the thumbnail is
+// (object-fit: cover). It starts with the thumbnail's own, already decoded picture so it appears at once,
+// then swaps in the full-size one. Only transform / opacity / clip-path animate: no page re-layout.
 const PV_MS = 280;
 const PV_EASE = 'cubic-bezier(.2, .8, .2, 1)';
-async function viewPhoto(src, from) {
-  if ($('.pv')) return;
+const PEEK_IN = 'cubic-bezier(.3, 1.3, .6, 1)'; // a little spring, like the iPhone's preview
+const viewPhoto = (src, from) => zoomPhoto(src, from, false);
+const peekPhoto = (src, from) => zoomPhoto(src, from, true);
+async function zoomPhoto(src, from, peek) {
+  if ($('.pv')) return null;
   const pv = document.createElement('div');
-  pv.className = 'pv';
-  pv.innerHTML = '<div class="pv-bg"></div><img class="pv-img" alt=""><button class="pv-x" aria-label="关闭">✕</button>';
+  pv.className = 'pv' + (peek ? ' peek' : '');
+  pv.innerHTML = `<div class="pv-bg"></div><img class="pv-img" alt="">${peek ? '' : '<button class="pv-x" aria-label="关闭">✕</button>'}`;
   const img = $('.pv-img', pv);
   const bg = $('.pv-bg', pv);
   const x = $('.pv-x', pv);
-  img.src = src;
-  try { await img.decode(); } catch (e) { /* still show it */ }
+  const ready = from && from.complete && from.naturalWidth;
+  img.src = ready ? from.currentSrc || from.src : src;
+  if (!ready) { try { await img.decode(); } catch (e) { /* still show it */ } }
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const nw = img.naturalWidth || vw;
   const nh = img.naturalHeight || vh;
-  const k = Math.min(vw / nw, (vh * 0.86) / nh);
+  const k = peek ? Math.min(Math.min(vw - 32, 520) / nw, (vh * 0.7) / nh) : Math.min(vw / nw, (vh * 0.86) / nh);
   const fw = nw * k;
   const fh = nh * k;
   const big = `translate(${(vw - fw) / 2}px, ${(vh - fh) / 2}px) scale(1)`;
-  const bigClip = 'inset(0px 0px 0px 0px round 8px)';
+  const bigClip = `inset(0px 0px 0px 0px round ${peek ? 18 : 8}px)`;
   img.style.width = fw + 'px';
   img.style.height = fh + 'px';
   img.style.transform = big;
@@ -1208,29 +1216,36 @@ async function viewPhoto(src, from) {
   const start = small() || { transform: big.replace('scale(1)', 'scale(.92)'), clip: bigClip, opacity: 0 };
   document.body.appendChild(pv);
   if (from) from.style.visibility = 'hidden';
-  img.animate(frames(start, open), { duration: PV_MS, easing: PV_EASE, fill: 'forwards' });
+  img.animate(frames(start, open), { duration: peek ? 320 : PV_MS, easing: peek ? PEEK_IN : PV_EASE, fill: 'forwards' });
   bg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: PV_MS, easing: 'ease-out', fill: 'forwards' });
-  x.animate([{ opacity: 0 }, { opacity: 1 }], { duration: PV_MS, fill: 'forwards' });
+  if (x) x.animate([{ opacity: 0 }, { opacity: 1 }], { duration: PV_MS, fill: 'forwards' });
 
   let closing = false;
+  if (img.src !== src) { // swap in the full-size picture once it's decoded (same shape, so nothing moves)
+    const hi = new Image();
+    hi.src = src;
+    hi.decode().then(() => { if (!closing) img.src = src; }, () => {});
+  }
   const close = () => {
     if (closing) return;
     closing = true;
     window.removeEventListener('hashchange', close);
     pv.classList.add('closing');
     const end = small() || { transform: big.replace('scale(1)', 'scale(.92)'), clip: bigClip, opacity: 0 };
+    const ms = peek ? 220 : PV_MS;
     img.getAnimations().forEach((a) => a.cancel());
-    const a = img.animate(frames(open, end), { duration: PV_MS, easing: PV_EASE, fill: 'forwards' });
-    bg.animate([{ opacity: 1 }, { opacity: 0 }], { duration: PV_MS, easing: 'ease-in', fill: 'forwards' });
-    x.animate([{ opacity: 1 }, { opacity: 0 }], { duration: PV_MS / 2, fill: 'forwards' });
+    const a = img.animate(frames(open, end), { duration: ms, easing: PV_EASE, fill: 'forwards' });
+    bg.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: 'ease-in', fill: 'forwards' });
+    if (x) x.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms / 2, fill: 'forwards' });
     const done = () => {
       if (from) from.style.visibility = ''; // same frame as the overlay goes: the picture lands exactly where it was
       pv.remove();
     };
     a.finished.then(done, done);
   };
-  pv.addEventListener('click', close);
+  if (!peek) pv.addEventListener('click', close);
   window.addEventListener('hashchange', close);
+  return { close };
 }
 
 // The full-size picture behind a thumbnail on the page (falls back to what the thumbnail shows).
@@ -1244,31 +1259,36 @@ function fullSrc(el) {
   return el.currentSrc || el.src;
 }
 
-// Long-press a photo → Lensy's viewer instead of iOS's own preview (which stutters as it springs back).
-let lp = null;
-let lpHeld = false;
+// Long-press a photo → preview pops up while the finger stays down, lifting it puts the picture back
+// (Lensy's own, because iOS's preview stutters as it springs back).
+let lp = null; // waiting for the press to become long
+let held = null; // the open preview: Promise of { close }
 let lpNoClickUntil = 0;
 const lpCancel = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+const release = (e) => {
+  lpCancel();
+  if (!held) return;
+  const h = held;
+  held = null;
+  h.then((p) => p && p.close());
+  lpNoClickUntil = Date.now() + 350; // lifting the finger must not also open the card behind the picture
+  if (e && e.cancelable) e.preventDefault();
+};
 document.addEventListener('touchstart', (e) => {
   lpCancel();
   const img = e.touches.length === 1 && e.target.closest && e.target.closest('#view img');
   if (!img || $('.pv')) return;
   const t = e.touches[0];
-  lp = { x: t.clientX, y: t.clientY, t: setTimeout(() => { lp = null; lpHeld = true; viewPhoto(fullSrc(img), img); }, 450) };
+  lp = { x: t.clientX, y: t.clientY, t: setTimeout(() => { lp = null; held = peekPhoto(fullSrc(img), img); }, 420) };
 }, { passive: true });
 document.addEventListener('touchmove', (e) => {
+  if (held) { if (e.cancelable) e.preventDefault(); return; } // the page stays put under the preview
   if (!lp) return;
   const t = e.touches[0];
   if (Math.abs(t.clientX - lp.x) > 10 || Math.abs(t.clientY - lp.y) > 10) lpCancel();
-}, { passive: true });
-document.addEventListener('touchcancel', () => { lpCancel(); lpHeld = false; }, { passive: true });
-document.addEventListener('touchend', (e) => {
-  lpCancel();
-  if (!lpHeld) return;
-  lpHeld = false;
-  lpNoClickUntil = Date.now() + 350; // lifting the finger must not also open the card behind the picture
-  if (e.cancelable) e.preventDefault();
 }, { passive: false });
+document.addEventListener('touchcancel', release, { passive: false });
+document.addEventListener('touchend', release, { passive: false });
 document.addEventListener('click', (e) => { if (Date.now() < lpNoClickUntil) { e.preventDefault(); e.stopPropagation(); } }, true);
 document.addEventListener('contextmenu', (e) => { if (e.target.closest && e.target.closest('#view img')) e.preventDefault(); });
 

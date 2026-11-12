@@ -308,6 +308,10 @@ img, a { -webkit-touch-callout: none; -webkit-user-drag: none; } /* no iOS long-
 .pv-img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; will-change: transform; -webkit-touch-callout: default; }
 .pv-x { position: absolute; top: calc(env(safe-area-inset-top) + 8px); right: 10px; border: 0; background: none; color: #fff; font-size: 22px; padding: 8px 12px; cursor: pointer; opacity: 0; }
 .pv.closing { pointer-events: none; }
+/* long-press preview: the page stays visible behind, blurred and dimmed, like the iPhone's */
+.pv.peek { pointer-events: none; }
+.pv.peek .pv-bg { background: rgba(40, 20, 30, .18); -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2); }
+@media (prefers-color-scheme: dark) { .pv.peek .pv-bg { background: rgba(0, 0, 0, .35); } }
 .ask { font-size: 15px; line-height: 1.6; margin: 0 0 14px; }
 .choices { display: grid; gap: 10px; margin-bottom: 8px; }
 

@@ -161,6 +161,9 @@ p { margin: 6px 0; }
 .gallery img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 14px; cursor: zoom-in; display: block; }
 .gallery.one { grid-template-columns: minmax(0, 1fr); }
 .gallery.one img { aspect-ratio: 4/3; border-radius: 16px; }
+.wgal img { aspect-ratio: 4 / 3; }
+.wgal + .btns { margin-top: 6px; }
+.specs .full { grid-column: 1 / -1; }
 .gallery.none { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; height: 170px; background: var(--card); border: 1px dashed var(--line); border-radius: 20px; margin: 0; color: var(--muted); cursor: pointer; }
 .btns.tight { margin-top: 8px; }
 .lhead { padding: 14px 2px 6px; }

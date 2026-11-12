@@ -1,6 +1,6 @@
 // Offline cache for the app shell. Bump VERSION whenever any file changes: the app checks for a new
 // sw.js every time it opens, installs it in the background and reloads into the new version.
-const VERSION = 'lensy-v1.3.2';
+const VERSION = 'lensy-v1.3.3';
 const PUSH_CACHE = 'lensy-push'; // this phone's push id + secret (written by the app), kept across versions
 const FILES = ['./', 'index.html', 'app.css', 'manifest.webmanifest', 'js/app.js', 'js/db.js', 'js/logic.js', 'js/catalog.js', 'js/style.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/maskable-512.png'];

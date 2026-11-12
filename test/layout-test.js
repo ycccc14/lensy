@@ -134,7 +134,7 @@ try {
 
   for (width of WIDTHS) {
     await ph.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 2, mobile: true });
-    for (const h of ['#home', '#lenses/using', '#lenses/stock', '#lenses/care', '#lenses/done', '#lens/L1', '#lens/L2', '#lens/L3', '#lens/L4', '#lens/L5', '#wish', '#me', '#stats']) {
+    for (const h of ['#home', '#lenses/using', '#lenses/stock', '#lenses/care', '#lenses/done', '#lens/L1', '#lens/L2', '#lens/L3', '#lens/L4', '#lens/L5', '#wish', '#wishitem/W1', '#wishitem/W2', '#wishitem/W3', '#me', '#stats']) {
       await go(h);
       await check(h);
     }
@@ -156,7 +156,7 @@ try {
     await tap('.tabs .plus'); await tap('.choices .btn', '护理液'); await sleep(250); await tap('[data-f=type]', '眼药水'); await sleep(150); await check('daily eye drops form');
     await tap('[data-f=dcycle]', '28 天'); await sleep(150); await check('28-day eye drops form'); await closeAll();
     await go('#wish');
-    await tap('[data-act=edit-wish]'); await sleep(250); await check('wish form'); await closeAll();
+    await tap('[data-act=open-wish]'); await sleep(250); await tap('.bar [data-act=edit-wish]'); await sleep(250); await check('wish form'); await closeAll();
     await go('#me');
     await tap('[data-act=ics]'); await sleep(250); await check('calendar sheet'); await closeAll();
 

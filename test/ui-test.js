@@ -211,10 +211,27 @@ try {
   assert.ok((await js('document.querySelector(".wgrid").innerText')).includes('¥ 89'));
   assert.ok((await js('document.querySelector(".top").innerText')).includes('RM 53.4'), 'total converted to MYR (89 × 0.6)');
   await shot('06-wish');
+  // Tapping the card opens the wish's own page: every picture, style suggestions, 编辑 top right.
+  await tap('.wbody[data-act=open-wish]');
+  await until('location.hash.startsWith("#wishitem/") && document.querySelector(".wgal img")', 'wish detail');
+  ph.nextFiles([PHOTO]);
+  await tap('[data-act=add-photo]');
+  await until('document.querySelectorAll(".wgal img").length === 2', 'second wish picture shown');
+  assert.equal(await S('S.wish[0].photos.length'), 2);
+  assert.ok((await js('document.querySelector(".card.style").innerText')).includes('穿搭'), 'style & outfit suggestions');
+  assert.ok((await js('document.querySelector(".card.style").innerText')).includes('Russian Velvet') || (await js('document.querySelector(".card.style").innerText')).includes('混血'));
+  const editBtn = await js('(() => { const b = document.querySelector(".bar [data-act=edit-wish]").getBoundingClientRect(); return b.right > innerWidth - 80 && b.top < 80; })()');
+  assert.ok(editBtn, '编辑 button top right');
+  await shot('06c-wish-detail');
+  await tap('.bar [data-act=edit-wish]');
+  await until('document.querySelector(".sheet-wrap [data-f=save]")', 'wish edit form');
+  assert.equal(await js('document.querySelectorAll(".sheet-wrap .pgrid img").length'), 2);
+  await save();
+  assert.ok((await js('location.hash')).startsWith('#wishitem/'), 'stays on the wish page after saving');
   await tap('[data-act=wish-bought]');
   await until('document.querySelector(".sheet-wrap [data-f=brand]")', 'lens form from wish');
   assert.ok((await js('document.querySelector("[data-f=brand]").textContent')).includes('OLENS'));
-  assert.equal(await js('document.querySelectorAll(".sheet-wrap .pgrid img").length'), 1, 'photo carried over');
+  assert.equal(await js('document.querySelectorAll(".sheet-wrap .pgrid img").length'), 2, 'photos carried over');
   await tap('[data-f=cycle]', '月抛');
   await save();
   await until('location.hash.startsWith("#lens/")', 'new lens');
@@ -227,13 +244,13 @@ try {
   await until('document.querySelector(".pv-img") && document.querySelector(".pv-img").naturalWidth > 0', 'tap opens the photo viewer');
   await js('document.querySelector(".pv").click()');
   await until('!document.querySelector(".pv") && document.querySelector("[data-act=photo]").style.visibility === ""', 'viewer closed');
-  ok('wishlist with photo (¥, 4:3) → bought → lens keeps currency, picture filed as 网图');
+  ok('wishlist with photo (¥, 4:3) → detail page (all pictures, style, 编辑) → bought → lens keeps currency, picture filed as 网图');
 
   // 8. Detail page with style suggestions and Xiaohongshu links
   const id = await S('S.lenses.find((l) => l.brand === "Moody").id');
   await go(`#lens/${id}`);
   const detail = await js('document.body.innerText');
-  assert.ok(detail.includes('风格 & 妆容建议') && detail.includes('眼影') && detail.includes('去小红书'));
+  assert.ok(detail.includes('风格 & 搭配建议') && detail.includes('眼影') && detail.includes('去小红书'));
   assert.ok(await js('[...document.querySelectorAll("a[href^=\\"xhsdiscover://\\"]")].length === 3'));
   assert.ok(await js('decodeURIComponent(document.querySelector("a[href*=\\"xiaohongshu.com\\"]").href).includes("Moody 冷泡乌龙茶 上眼")'));
   await full('07-detail');

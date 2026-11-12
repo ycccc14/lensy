@@ -4,7 +4,7 @@ import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, 
 import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
 import { suggest, xhsApp, xhsWeb } from './style.js';
 
-const VERSION = '1.3.2';
+const VERSION = '1.3.3';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
@@ -377,6 +377,19 @@ function careList() {
     ${old.length ? `<details class="old"><summary>已用完（${old.length}）</summary><div class="list">${old.map(card).join('')}</div></details>` : ''}`;
 }
 
+// Style & makeup card (lens detail and wishlist detail).
+function styleCard(sg) {
+  return `<section class="card style"><h3>风格 & 搭配建议 <small>根据花色、色系和尺寸自动生成</small></h3>
+    <div class="tags">${sg.tags.map((x) => `<span class="tag pink">${esc(x)}</span>`).join('')}</div>
+    <p class="formula">💄 ${esc(sg.formula)}</p>
+    <div class="makeup">${sg.makeup.map((m) => `<div><span>${m.k}</span><div>${m.palette ? m.palette.map((p) => `<i class="dot" style="background:${p.hex}"></i>${esc(p.name)}`).join('　') : esc(m.text)}</div></div>`).join('')}
+    <div><span>适合</span><div>${sg.scenes.map(esc).join(' · ')}</div></div><div><span>发色</span><div>${esc(sg.hair)}</div></div><div><span>穿搭</span><div>${esc(sg.outfit)}</div></div></div>
+    <ul class="tips">${sg.tips.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+    <h4>去小红书看真人上眼 & 妆容</h4>
+    ${sg.searches.map((s) => `<div class="xrow"><span>${esc(s.label)}<small>${esc(s.q)}</small></span><a class="btn xhs-btn sm" href="${s.app}">📕 App</a><a class="btn ghost sm" href="${s.web}" target="_blank" rel="noopener">网页</a></div>`).join('')}
+  </section>`;
+}
+
 function LensDetail(id) {
   const l = lensById(id);
   if (!l) return `<header class="bar"><button class="back" data-act="back">‹</button><b>美瞳</b><span></span></header><div class="empty">找不到这副美瞳</div>`;
@@ -435,15 +448,7 @@ function LensDetail(id) {
     ${spec('度数 左', l.powerL)}${spec('度数 右', l.powerR)}${spec('有效期', l.expiry)}${spec('购买日期', l.buyDate)}
     ${spec('价格', priceText(l))}${spec('购买渠道', l.shop)}${long ? spec('换水间隔', `${Number(l.soakDays) || S.settings.soakDays} 天`) : ''}${spec('买入片数', l.boughtQty)}
   </div>${l.notes ? `<p class="note">📝 ${esc(l.notes)}</p>` : ''}</section>
-  <section class="card style"><h3>风格 & 妆容建议 <small>根据花色、色系和尺寸自动生成</small></h3>
-    <div class="tags">${sg.tags.map((x) => `<span class="tag pink">${esc(x)}</span>`).join('')}</div>
-    <p class="formula">💄 ${esc(sg.formula)}</p>
-    <div class="makeup">${sg.makeup.map((m) => `<div><span>${m.k}</span><div>${m.palette ? m.palette.map((p) => `<i class="dot" style="background:${p.hex}"></i>${esc(p.name)}`).join('　') : esc(m.text)}</div></div>`).join('')}
-    <div><span>适合</span><div>${sg.scenes.map(esc).join(' · ')}</div></div><div><span>发色</span><div>${esc(sg.hair)}</div></div><div><span>穿搭</span><div>${esc(sg.outfit)}</div></div></div>
-    <ul class="tips">${sg.tips.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
-    <h4>去小红书看真人上眼 & 妆容</h4>
-    ${sg.searches.map((s) => `<div class="xrow"><span>${esc(s.label)}<small>${esc(s.q)}</small></span><a class="btn xhs-btn sm" href="${s.app}">📕 App</a><a class="btn ghost sm" href="${s.web}" target="_blank" rel="noopener">网页</a></div>`).join('')}
-  </section>
+  ${styleCard(sg)}
   <section class="card"><div class="row between"><h3>我的灵感收藏</h3><button class="btn ghost sm" data-act="add-inspo" data-id="${l.id}">＋ 收藏</button></div>
     ${(l.inspo || []).length ? `<div class="inspo-list">${l.inspo.map((x, i) => `<div class="ins">${x.img ? `<img src="${x.img}" data-act="inspo-img" data-id="${l.id}" data-i="${i}" alt="">` : ''}<div class="grow">${x.note ? `<p>${esc(x.note)}</p>` : ''}${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url.length > 42 ? x.url.slice(0, 42) + '…' : x.url)}</a>` : ''}</div><button class="x" data-act="del-inspo" data-id="${l.id}" data-i="${i}" aria-label="删除">✕</button></div>`).join('')}</div>`
       : '<p class="muted sm">在小红书看到喜欢的妆容？复制笔记链接或截图存到这里。</p>'}</section>
@@ -463,11 +468,35 @@ function Wish() {
   <div class="wgrid">${list.length ? list.map((w) => {
     const q = `${w.brand || ''} ${(w.color || '').split(' ').find((x) => /[一-龥]/.test(x)) || w.color || ''} 上眼`.trim();
     return `<div class="card wcard">
-      <div class="wimg" data-act="edit-wish" data-id="${w.id}">${w.photos && w.photos[0] ? `<img src="${photoSrc(w.photos[0])}" alt="">` : iris(w.tone, 'xl')}${w.priority ? `<span class="pri">${'♥'.repeat(w.priority)}</span>` : ''}</div>
-      <div class="wbody" data-act="edit-wish" data-id="${w.id}"><b>${esc(w.brand || '')}</b><div class="sm">${esc(w.color || '')}</div>
+      <div class="wimg" data-act="open-wish" data-id="${w.id}">${w.photos && w.photos[0] ? `<img src="${photoSrc(w.photos[0])}" alt="">` : iris(w.tone, 'xl')}${w.priority ? `<span class="pri">${'♥'.repeat(w.priority)}</span>` : ''}</div>
+      <div class="wbody" data-act="open-wish" data-id="${w.id}"><b>${esc(w.brand || '')}</b><div class="sm">${esc(w.color || '')}</div>
       <div class="muted sm">${[w.cycle && CYCLES[w.cycle] ? CYCLES[w.cycle].label : '', money(w.price, w.priceCur)].filter(Boolean).join(' · ')}</div></div>
       <div class="wact"><a class="btn xhs-btn sm" href="${xhsApp(q)}">📕</a><button class="btn primary sm" data-act="wish-bought" data-id="${w.id}">买到了</button></div></div>`;
   }).join('') : '<div class="empty wide">把下次想买的美瞳存起来，附上图片和价格<br><button class="btn primary" data-act="add-wish">＋ 添加心愿</button></div>'}</div>`;
+}
+
+function WishDetail(id) {
+  const w = S.wish.find((x) => x.id === id);
+  if (!w) return `<header class="bar"><button class="back" data-act="back" aria-label="返回">‹</button><b>心愿</b><span></span></header><div class="empty">找不到这条心愿</div>`;
+  const ph = w.photos || [];
+  const photos = ph.length
+    ? `<div class="gallery wgal ${ph.length === 1 ? 'one' : ''}">${ph.map((p, i) => `<img src="${ph.length === 1 ? p.full || p.thumb : photoSrc(p)}" data-act="photo" data-id="${w.id}" data-i="${i}" alt="">`).join('')}</div>
+      <div class="btns center"><button class="btn ghost sm" data-act="add-photo" data-id="${w.id}" data-kind="web">＋ 添加图片</button></div>`
+    : `<div class="gallery none" data-act="add-photo" data-id="${w.id}" data-kind="web">${iris(w.tone, 'xl')}<span>＋ 添加网图</span></div>`;
+  const q = `${w.brand || ''} ${(w.color || '').split(' ').find((x) => /[一-龥]/.test(x)) || w.color || ''} 上眼`.trim();
+  const spec = (k, v, cls) => (v !== '' && v != null ? `<div class="${cls || ''}"><span>${k}</span><b>${esc(v)}</b></div>` : '');
+  const sp = w.brand && w.color ? specFor(w.brand, w.color, w.cycle, S.learned, w.series) : null;
+  const mm = (v) => (v ? v + 'mm' : '');
+  return `<header class="bar"><button class="back" data-act="back" aria-label="返回">‹</button><b>心愿详情</b><button class="btn ghost sm" data-act="edit-wish" data-id="${w.id}">编辑</button></header>
+  ${photos}
+  <div class="lhead"><h1>${esc(w.brand || '未选品牌')}</h1>${w.color ? `<div class="lcolor">${iris(w.tone)}${esc(w.color)}</div>` : ''}
+  <div class="tags">${w.cycle && CYCLES[w.cycle] ? `<span class="tag">${CYCLES[w.cycle].label}</span>` : ''}${TONES[w.tone] ? `<span class="tag">${TONES[w.tone].label}</span>` : ''}${w.series ? `<span class="tag">${esc(w.series)}</span>` : ''}${w.priority ? `<span class="tag pink">${'♥'.repeat(w.priority)}</span>` : ''}</div></div>
+  <section class="card"><h3>资料</h3><div class="specs">
+    ${spec('价格', priceText(w), 'full')}${spec('在哪买', w.shop, 'full')}
+    ${sp && sp.from !== 'none' ? spec('直径', mm(sp.dia)) + spec('着色直径', mm(sp.gdia)) + spec('基弧', mm(sp.bc)) + spec('含水量', sp.water ? sp.water + '%' : '') : ''}
+  </div>${w.link ? `<p class="note">🔗 <a href="${esc(w.link)}" target="_blank" rel="noopener">${esc(w.link.length > 42 ? w.link.slice(0, 42) + '…' : w.link)}</a></p>` : ''}${w.notes ? `<p class="note">📝 ${esc(w.notes)}</p>` : ''}
+  <div class="btns"><button class="btn primary" data-act="wish-bought" data-id="${w.id}">买到了</button><a class="btn xhs-btn" href="${xhsApp(q)}">📕 小红书看上眼</a></div></section>
+  ${styleCard(suggest({ ...w, dia: sp && sp.dia, gdia: sp && sp.gdia }))}`;
 }
 
 function Me() {
@@ -835,7 +864,7 @@ function wishForm(existing) {
     else if (k === 'pri') { f.priority = Number(b.dataset.v); draw(); }
     else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
-    else if (k === 'del') { if (await ask('删除心愿', '确定删除吗？', '删除', true)) { await remove('wish', f.id); sh.close(); render(); } }
+    else if (k === 'del') { if (await ask('删除心愿', '确定删除吗？', '删除', true)) { await remove('wish', f.id); sh.close(); if (location.hash.startsWith('#wishitem/')) location.hash = '#wish'; else render(); } }
     else if (k === 'save') {
       if (!f.brand && !f.color && !f.photos.length) { toast('至少选个品牌、花色或加张图'); return; }
       const rec = existing ? { ...existing } : { id: f.id, createdAt: Date.now() };
@@ -843,7 +872,7 @@ function wishForm(existing) {
       Object.assign(rec, { brand: f.brand, series: f.series, color: f.color, cycle: f.cycle, tone: f.tone || guessTone(f.color), price: f.price === '' ? '' : Number(f.price) || '', priceCur: curOf(f.priceCur), shop: f.shop.trim(), link: f.link.trim(), priority: Number(f.priority) || 0, photos: f.photos, notes: f.notes.trim() });
       await save('wish', rec);
       sh.close();
-      toast('已加入心愿单 💗');
+      toast(isNew ? '已加入心愿单 💗' : '已保存');
       render();
     }
   });
@@ -1041,11 +1070,12 @@ const ACTS = {
   photo: (d, el) => viewPhoto(fullSrc(el), el),
   'inspo-img': (d, el) => viewPhoto(fullSrc(el), el),
   'add-photo': async (d) => {
-    const l = lensById(d.id);
+    const w = S.wish.find((x) => x.id === d.id);
+    const l = w || lensById(d.id);
     const ph = await photosFromPicker(d.kind || 'mine');
     if (!ph.length) return;
     l.photos = (l.photos || []).concat(ph);
-    await save('lenses', l);
+    await save(w ? 'wish' : 'lenses', l);
     render();
   },
   'add-inspo': (d) => {
@@ -1098,6 +1128,7 @@ const ACTS = {
   },
   'care-restore': async (d) => { const c = S.care.find((x) => x.id === d.id); c.finished = false; await save('care', c); render(); },
   'add-wish': () => wishForm(),
+  'open-wish': (d) => { location.hash = `#wishitem/${d.id}`; },
   'edit-wish': (d) => wishForm(S.wish.find((w) => w.id === d.id)),
   'wish-bought': (d) => {
     const w = S.wish.find((x) => x.id === d.id);
@@ -1395,7 +1426,7 @@ async function notifyDue() {
 }
 
 // ---------- routing ----------
-const SCREENS = { home: Home, lenses: Lenses, lens: LensDetail, wish: Wish, me: Me, stats: Stats };
+const SCREENS = { home: Home, lenses: Lenses, lens: LensDetail, wish: Wish, wishitem: WishDetail, me: Me, stats: Stats };
 let lastRoute = '';
 function render() {
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
@@ -1404,7 +1435,7 @@ function render() {
   const y = route === lastRoute ? scrollY : 0;
   lastRoute = route;
   $('#view').innerHTML = fn(arg);
-  const tab = { lens: 'lenses', stats: 'me' }[name] || (SCREENS[name] ? name : 'home');
+  const tab = { lens: 'lenses', wishitem: 'wish', stats: 'me' }[name] || (SCREENS[name] ? name : 'home');
   $$('.tabs [data-tab]').forEach((t) => t.classList.toggle('on', t.dataset.tab === tab));
   scrollTo(0, y);
   const filter = $('[data-filter]');

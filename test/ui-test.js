@@ -190,10 +190,12 @@ try {
   await save();
   await until('document.querySelector(".wcard img")', 'wish card');
   const wimgRatio = '(() => { const r = document.querySelector(".wimg").getBoundingClientRect(); return Math.round((r.width / r.height) * 100) / 100; })()';
-  assert.equal(await js(wimgRatio), 1.33, 'wishlist pictures are 4:3');
+  assert.equal(await js(wimgRatio), 0.75, 'wishlist pictures are portrait 3:4');
   // A tall screenshot (小红书) must not stretch the card either.
   await js('new Promise((r) => { const c = document.createElement("canvas"); c.width = 400; c.height = 1200; c.getContext("2d").fillRect(0, 0, 400, 1200); const i = document.querySelector(".wimg img"); i.onload = r; i.src = c.toDataURL(); })');
-  assert.equal(await js(wimgRatio), 1.33, 'tall wishlist pictures are cropped to 4:3');
+  assert.equal(await js(wimgRatio), 0.75, 'tall wishlist pictures are cropped to 3:4');
+  await js('new Promise((r) => { const c = document.createElement("canvas"); c.width = 1200; c.height = 400; c.getContext("2d").fillRect(0, 0, 1200, 400); const i = document.querySelector(".wimg img"); i.onload = r; i.src = c.toDataURL(); })');
+  assert.equal(await js(wimgRatio), 0.75, 'wide wishlist pictures are cropped to 3:4 too');
   await go('#home'); await go('#wish'); await until('document.querySelector(".wimg img")', 'wish card again');
   // Long-press a picture: a preview pops up while the finger is down (not the edit form),
   // and goes back into the card as soon as the finger lifts.
@@ -217,6 +219,7 @@ try {
   ph.nextFiles([PHOTO]);
   await tap('[data-act=add-photo]');
   await until('document.querySelectorAll(".wgal img").length === 2', 'second wish picture shown');
+  assert.ok(await js('(() => { const r = document.querySelector(".wgal img").getBoundingClientRect(); return Math.abs(r.width / r.height - 0.75) < 0.02; })()'), 'detail pictures are portrait 3:4');
   assert.equal(await S('S.wish[0].photos.length'), 2);
   assert.ok((await js('document.querySelector(".card.style").innerText')).includes('穿搭'), 'style & outfit suggestions');
   assert.ok((await js('document.querySelector(".card.style").innerText')).includes('Russian Velvet') || (await js('document.querySelector(".card.style").innerText')).includes('混血'));
@@ -244,7 +247,7 @@ try {
   await until('document.querySelector(".pv-img") && document.querySelector(".pv-img").naturalWidth > 0', 'tap opens the photo viewer');
   await js('document.querySelector(".pv").click()');
   await until('!document.querySelector(".pv") && document.querySelector("[data-act=photo]").style.visibility === ""', 'viewer closed');
-  ok('wishlist with photo (¥, 4:3) → detail page (all pictures, style, 编辑) → bought → lens keeps currency, picture filed as 网图');
+  ok('wishlist with photo (¥, portrait 3:4) → detail page (all pictures, style, 编辑) → bought → lens keeps currency, picture filed as 网图');
 
   // 8. Detail page with style suggestions and Xiaohongshu links
   const id = await S('S.lenses.find((l) => l.brand === "Moody").id');

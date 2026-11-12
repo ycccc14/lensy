@@ -4,7 +4,7 @@ import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, 
 import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
 import { suggest, xhsApp, xhsWeb } from './style.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
@@ -1038,11 +1038,8 @@ const ACTS = {
     await remove('wears', w.id);
     render();
   },
-  photo: (d) => {
-    const l = lensById(d.id) || S.wish.find((x) => x.id === d.id);
-    viewPhoto(l.photos[+d.i].full);
-  },
-  'inspo-img': (d) => viewPhoto(lensById(d.id).inspo[+d.i].img),
+  photo: (d, el) => viewPhoto(fullSrc(el), el),
+  'inspo-img': (d, el) => viewPhoto(fullSrc(el), el),
   'add-photo': async (d) => {
     const l = lensById(d.id);
     const ph = await photosFromPicker(d.kind || 'mine');
@@ -1165,10 +1162,115 @@ const ACTS = {
   },
 };
 
-function viewPhoto(src) {
-  const sh = sheet('', `<img class="full" src="${src}" alt="">`, { cls: 'photo' });
-  sh.body.addEventListener('click', () => sh.close());
+// Full-screen photo viewer. The picture grows out of `from` (the thumbnail that was tapped or long-pressed)
+// and shrinks back into it on close, cropped the same way the thumbnail is (object-fit: cover).
+// Only transform / opacity / clip-path are animated, so nothing on the page has to re-layout.
+const PV_MS = 280;
+const PV_EASE = 'cubic-bezier(.2, .8, .2, 1)';
+async function viewPhoto(src, from) {
+  if ($('.pv')) return;
+  const pv = document.createElement('div');
+  pv.className = 'pv';
+  pv.innerHTML = '<div class="pv-bg"></div><img class="pv-img" alt=""><button class="pv-x" aria-label="关闭">✕</button>';
+  const img = $('.pv-img', pv);
+  const bg = $('.pv-bg', pv);
+  const x = $('.pv-x', pv);
+  img.src = src;
+  try { await img.decode(); } catch (e) { /* still show it */ }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const nw = img.naturalWidth || vw;
+  const nh = img.naturalHeight || vh;
+  const k = Math.min(vw / nw, (vh * 0.86) / nh);
+  const fw = nw * k;
+  const fh = nh * k;
+  const big = `translate(${(vw - fw) / 2}px, ${(vh - fh) / 2}px) scale(1)`;
+  const bigClip = 'inset(0px 0px 0px 0px round 8px)';
+  img.style.width = fw + 'px';
+  img.style.height = fh + 'px';
+  img.style.transform = big;
+  // Where the thumbnail is now, as a transform + crop of the big picture (null: it's gone or off screen).
+  const small = () => {
+    if (!from || !from.isConnected) return null;
+    const r = from.getBoundingClientRect();
+    if (!r.width || !r.height || r.bottom < 0 || r.top > vh) return null;
+    const s = Math.max(r.width / fw, r.height / fh);
+    const ix = (fw - r.width / s) / 2;
+    const iy = (fh - r.height / s) / 2;
+    const rad = (parseFloat(getComputedStyle(from).borderTopLeftRadius) || 0) / s;
+    return { transform: `translate(${r.left - ix * s}px, ${r.top - iy * s}px) scale(${s})`, clip: `inset(${iy}px ${ix}px ${iy}px ${ix}px round ${rad}px)` };
+  };
+  const frames = (a, b) => [
+    { transform: a.transform, clipPath: a.clip, webkitClipPath: a.clip, opacity: a.opacity == null ? 1 : a.opacity },
+    { transform: b.transform, clipPath: b.clip, webkitClipPath: b.clip, opacity: b.opacity == null ? 1 : b.opacity },
+  ];
+  const open = { transform: big, clip: bigClip };
+  const start = small() || { transform: big.replace('scale(1)', 'scale(.92)'), clip: bigClip, opacity: 0 };
+  document.body.appendChild(pv);
+  if (from) from.style.visibility = 'hidden';
+  img.animate(frames(start, open), { duration: PV_MS, easing: PV_EASE, fill: 'forwards' });
+  bg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: PV_MS, easing: 'ease-out', fill: 'forwards' });
+  x.animate([{ opacity: 0 }, { opacity: 1 }], { duration: PV_MS, fill: 'forwards' });
+
+  let closing = false;
+  const close = () => {
+    if (closing) return;
+    closing = true;
+    window.removeEventListener('hashchange', close);
+    pv.classList.add('closing');
+    const end = small() || { transform: big.replace('scale(1)', 'scale(.92)'), clip: bigClip, opacity: 0 };
+    img.getAnimations().forEach((a) => a.cancel());
+    const a = img.animate(frames(open, end), { duration: PV_MS, easing: PV_EASE, fill: 'forwards' });
+    bg.animate([{ opacity: 1 }, { opacity: 0 }], { duration: PV_MS, easing: 'ease-in', fill: 'forwards' });
+    x.animate([{ opacity: 1 }, { opacity: 0 }], { duration: PV_MS / 2, fill: 'forwards' });
+    const done = () => {
+      if (from) from.style.visibility = ''; // same frame as the overlay goes: the picture lands exactly where it was
+      pv.remove();
+    };
+    a.finished.then(done, done);
+  };
+  pv.addEventListener('click', close);
+  window.addEventListener('hashchange', close);
 }
+
+// The full-size picture behind a thumbnail on the page (falls back to what the thumbnail shows).
+function fullSrc(el) {
+  const d = el.dataset;
+  const big = (p) => p && (p.full || p.thumb);
+  if (d.act === 'photo') { const l = lensById(d.id) || S.wish.find((w) => w.id === d.id); const p = l && big((l.photos || [])[+d.i]); if (p) return p; }
+  if (d.act === 'inspo-img') { const l = lensById(d.id); const p = l && l.inspo && l.inspo[+d.i] && l.inspo[+d.i].img; if (p) return p; }
+  const wi = el.closest('.wimg');
+  if (wi) { const w = S.wish.find((x) => x.id === wi.dataset.id); const p = w && big((w.photos || [])[0]); if (p) return p; }
+  return el.currentSrc || el.src;
+}
+
+// Long-press a photo → Lensy's viewer instead of iOS's own preview (which stutters as it springs back).
+let lp = null;
+let lpHeld = false;
+let lpNoClickUntil = 0;
+const lpCancel = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+document.addEventListener('touchstart', (e) => {
+  lpCancel();
+  const img = e.touches.length === 1 && e.target.closest && e.target.closest('#view img');
+  if (!img || $('.pv')) return;
+  const t = e.touches[0];
+  lp = { x: t.clientX, y: t.clientY, t: setTimeout(() => { lp = null; lpHeld = true; viewPhoto(fullSrc(img), img); }, 450) };
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!lp) return;
+  const t = e.touches[0];
+  if (Math.abs(t.clientX - lp.x) > 10 || Math.abs(t.clientY - lp.y) > 10) lpCancel();
+}, { passive: true });
+document.addEventListener('touchcancel', () => { lpCancel(); lpHeld = false; }, { passive: true });
+document.addEventListener('touchend', (e) => {
+  lpCancel();
+  if (!lpHeld) return;
+  lpHeld = false;
+  lpNoClickUntil = Date.now() + 350; // lifting the finger must not also open the card behind the picture
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
+document.addEventListener('click', (e) => { if (Date.now() < lpNoClickUntil) { e.preventDefault(); e.stopPropagation(); } }, true);
+document.addEventListener('contextmenu', (e) => { if (e.target.closest && e.target.closest('#view img')) e.preventDefault(); });
 
 function calendarSheet(ics, name, gcal) {
   const count = (ics.match(/BEGIN:VEVENT/g) || []).length;
@@ -1310,12 +1412,12 @@ document.addEventListener('change', async (e) => {
 window.addEventListener('hashchange', render);
 // No zooming. Double-tap zoom is turned off by touch-action in app.css; iOS ignores user-scalable=no,
 // so pinch gestures are stopped here too (except in the full-screen photo viewer).
-document.addEventListener('gesturestart', (e) => { if (!(e.target.closest && e.target.closest('.sheet.photo'))) e.preventDefault(); }, { passive: false });
+document.addEventListener('gesturestart', (e) => { if (!(e.target.closest && e.target.closest('.pv'))) e.preventDefault(); }, { passive: false });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   checkUpdate();
   pushSoon(300);
-  if (!$('.sheet-wrap')) render();
+  if (!$('.sheet-wrap') && !$('.pv')) render();
 });
 setInterval(() => {
   $$('[data-since]').forEach((el) => { el.textContent = dur(Date.now() - new Date(el.dataset.since)); });
@@ -1352,7 +1454,7 @@ async function checkUpdate() {
 }
 function reloadWhenIdle() {
   if (reloadWhenIdle.done) return;
-  if ($('.sheet-wrap')) { setTimeout(reloadWhenIdle, 1500); return; } // don't lose a form being filled in
+  if ($('.sheet-wrap') || $('.pv')) { setTimeout(reloadWhenIdle, 1500); return; } // don't lose a form being filled in
   reloadWhenIdle.done = true;
   try { sessionStorage.setItem('lensy-updated', '1'); } catch (e) { /* ignore */ }
   location.reload();

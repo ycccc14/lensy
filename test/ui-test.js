@@ -189,7 +189,25 @@ try {
   await js('(() => { const s = document.querySelector(".sheet-wrap [name=priceCur]"); s.value = "CNY"; s.dispatchEvent(new Event("change", { bubbles: true })); })()');
   await save();
   await until('document.querySelector(".wcard img")', 'wish card');
-  assert.equal(await js('(() => { const r = document.querySelector(".wimg").getBoundingClientRect(); return Math.round((r.width / r.height) * 100) / 100; })()'), 1.33, 'wishlist pictures are 4:3');
+  const wimgRatio = '(() => { const r = document.querySelector(".wimg").getBoundingClientRect(); return Math.round((r.width / r.height) * 100) / 100; })()';
+  assert.equal(await js(wimgRatio), 1.33, 'wishlist pictures are 4:3');
+  // A tall screenshot (小红书) must not stretch the card either.
+  await js('new Promise((r) => { const c = document.createElement("canvas"); c.width = 400; c.height = 1200; c.getContext("2d").fillRect(0, 0, 400, 1200); const i = document.querySelector(".wimg img"); i.onload = r; i.src = c.toDataURL(); })');
+  assert.equal(await js(wimgRatio), 1.33, 'tall wishlist pictures are cropped to 4:3');
+  await go('#home'); await go('#wish'); await until('document.querySelector(".wimg img")', 'wish card again');
+  // Long-press a picture: Lensy's own viewer opens (not the edit form) and closes back into the card.
+  const c0 = await js('(() => { const r = document.querySelector(".wimg img").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()');
+  await ph.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [c0] });
+  await sleep(650);
+  await ph.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await until('document.querySelector(".pv")', 'photo viewer from long-press');
+  await sleep(400);
+  assert.equal(await sheetCount(), 0, 'long-press does not also open the wish form');
+  assert.ok(await js('(() => { const r = document.querySelector(".pv-img").getBoundingClientRect(); return r.width > 300; })()'), 'picture shown big');
+  await sleep(300); // a person looks at it before tapping to close
+  await js('document.querySelector(".pv").click()');
+  await until('!document.querySelector(".pv") && document.querySelector(".wimg img").style.visibility === ""', 'viewer closed, card picture back');
+  assert.equal(await sheetCount(), 0);
   assert.ok((await js('document.querySelector(".wgrid").innerText')).includes('¥ 89'));
   assert.ok((await js('document.querySelector(".top").innerText')).includes('RM 53.4'), 'total converted to MYR (89 × 0.6)');
   await shot('06-wish');
@@ -205,6 +223,10 @@ try {
   assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").priceCur'), 'CNY');
   assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").photos[0].kind'), 'web', 'wishlist picture becomes a 网图');
   assert.ok((await js('document.body.innerText')).includes('网图') && (await js('document.body.innerText')).includes('我的佩戴效果'));
+  await tap('[data-act=photo]');
+  await until('document.querySelector(".pv-img") && document.querySelector(".pv-img").naturalWidth > 0', 'tap opens the photo viewer');
+  await js('document.querySelector(".pv").click()');
+  await until('!document.querySelector(".pv") && document.querySelector("[data-act=photo]").style.visibility === ""', 'viewer closed');
   ok('wishlist with photo (¥, 4:3) → bought → lens keeps currency, picture filed as 网图');
 
   // 8. Detail page with style suggestions and Xiaohongshu links

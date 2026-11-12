@@ -10,6 +10,8 @@ node test/logic.test.js
 if ($LASTEXITCODE -ne 0) { throw 'Logic tests failed - nothing was published.' }
 node test/ui-test.js
 if ($LASTEXITCODE -ne 0) { throw 'UI test failed - nothing was published.' }
+node test/layout-test.js
+if ($LASTEXITCODE -ne 0) { throw 'Layout test failed - nothing was published.' }
 
 $ErrorActionPreference = 'Continue' # git writes harmless warnings to stderr; check exit codes instead
 git add -A

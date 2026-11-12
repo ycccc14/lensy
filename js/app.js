@@ -5,7 +5,7 @@ import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, len
 import { suggest, xhsApp, xhsWeb } from './style.js';
 import { parseExport, toRows } from './importer.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -184,7 +184,7 @@ function Home() {
   const pieces = live.reduce((a, l) => a + (l.qty || 0), 0);
   const st = stats(S);
   const install = IOS && !STANDALONE && !S.settings.hideInstall
-    ? `<div class="card install"><b>📲 把 Lensy 加到主屏幕</b><p>在 Safari 点下方 <b>分享</b> → <b>添加到主屏幕</b>，就能像 App 一样打开，还可以开启通知。</p><button class="btn ghost sm" data-act="hide-install">知道了</button></div>` : '';
+    ? `<div class="card install"><b>📲 把 Lensy 加到主屏幕</b><p>在 Safari 点下方的 <b>Share</b> 按钮（方框加向上箭头）→ <b>Add to Home Screen</b> → <b>Add</b>，就能像 App 一样打开，还可以开启通知。</p><button class="btn ghost sm" data-act="hide-install">知道了</button></div>` : '';
   return `
   <header class="top"><div><div class="hello">${greet()} ✨</div><h1>Lensy</h1></div><div class="date">${fmtCN(t)}</div></header>
   ${install}
@@ -230,7 +230,7 @@ function wearCard() {
   const last = done[done.length - 1];
   const lastLens = last && lensById(last.lensId);
   if (!opts.length) {
-    return `<section class="card wear-pick"><b>还没有可以戴的美瞳</b><p class="muted">先把手上的美瞳录进来吧</p><div class="btns"><button class="btn primary" data-act="add-lens">＋ 添加美瞳</button><button class="btn soft" data-act="import-rem">从「提醒事项」导入</button></div></section>`;
+    return `<section class="card wear-pick"><b>还没有可以戴的美瞳</b><p class="muted">先把手上的美瞳录进来吧</p><div class="btns"><button class="btn primary" data-act="add-lens">＋ 添加美瞳</button><button class="btn soft" data-act="import-rem">从 Reminders 导入</button></div></section>`;
   }
   return `<section class="card wear-pick">
     <div class="row between"><b>今天戴哪副？</b>${lastLens ? `<span class="muted sm">今天戴过 ${esc(lastLens.color || lastLens.brand)}${last.hours ? ` ${last.hours.toFixed(1)}h` : ''}</span>` : ''}</div>
@@ -437,13 +437,13 @@ function Me() {
     ${num('warnDays', '到期前提醒', '天', 1, 60)}${num('soakDays', '换护理液间隔', '天', 1, 30)}${num('maxHours', '每天最长佩戴', '小时', 1, 24)}
     ${num('lowStock', '日抛库存少于', '片提醒', 0, 60)}${num('expiryWarn', '产品有效期前', '天提醒', 1, 365)}${num('careWarn', '护理品到期前', '天提醒', 1, 60)}</section>
   <h2 class="sec">通知 & 日历</h2><section class="card">
-    <div class="srow"><span>手机通知<small>${perm === 'granted' && s.notify ? '已开启：打开 App 时推送到期提醒，图标显示数字' : IOS && !STANDALONE ? '需要先“添加到主屏幕”，从主屏幕打开再开启' : '打开 App 时推送到期提醒'}</small></span>
+    <div class="srow"><span>手机通知<small>${perm === 'granted' && s.notify ? '已开启：打开 App 时推送到期提醒，图标显示数字' : IOS && !STANDALONE ? '需要先在 Safari 点 Share → Add to Home Screen，从主屏幕打开再开启' : '打开 App 时推送到期提醒'}</small></span>
       <button class="btn sm ${s.notify && perm === 'granted' ? 'soft' : 'primary'}" data-act="notify">${s.notify && perm === 'granted' ? '已开启' : '开启'}</button></div>
     <div class="srow"><span>加入手机日历<small>最可靠：每个到期日、换水日都会在日历里准时响铃，即使没打开 App</small></span><button class="btn sm primary" data-act="ics">导出</button></div></section>
   <h2 class="sec">资料备份</h2><section class="card">
     <p class="muted sm">所有资料只存在这台手机上${s.lastBackup ? `，上次备份 ${s.lastBackup.slice(0, 10)}` : '，还没备份过'}。换手机前记得导出。</p>
     <div class="btns"><button class="btn primary" data-act="backup">导出备份</button><button class="btn soft" data-act="restore">导入备份</button><button class="btn ghost danger-t" data-act="wipe">清空</button></div>
-    <div class="srow"><span>从「提醒事项」导入<small>把 iPhone 提醒事项里的美瞳清单和图片一次搬进来</small></span><button class="btn sm primary" data-act="import-rem">导入</button></div></section>
+    <div class="srow"><span>从 Reminders 导入<small>把 iPhone Reminders 里的美瞳清单和图片一次搬进来</small></span><button class="btn sm primary" data-act="import-rem">导入</button></div></section>
   <h2 class="sec">其他</h2><section class="card">
     <label class="srow"><span>货币符号</span><input type="text" data-set="currency" value="${esc(s.currency)}" maxlength="4" class="short"></label>
     <div class="srow"><span>品牌资料库<small>内置 ${BRANDS.length} 个品牌；你录入的新品牌/花色已记住 ${S.learned.length} 条</small></span></div>
@@ -571,6 +571,8 @@ function lensForm(existing, prefill, onSaved) {
     photos: [], notes: '', soakDays: '', openNow: false, openedAt: today(), perWear: 2, specFrom: '', ...(prefill || {}),
   };
   if (existing) f.qty = existing.qty;
+  for (const k of ['shop', 'notes', 'expiry', 'buyDate', 'series']) if (f[k] == null) f[k] = '';
+  f.photos = f.photos || [];
   const sh = sheet(isNew ? '添加美瞳' : '编辑美瞳', '', { foot: `<button class="btn primary block" data-f="save">${isNew ? '保存' : '保存修改'}</button>` });
   const applySpec = () => {
     if (!f.brand || !f.color || !f.cycle) { f.specFrom = ''; return; }
@@ -679,6 +681,8 @@ function careForm(existing) {
   const isNew = !existing;
   const f = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), type: 'solution', name: '', volume: '', price: '', expiry: '', opened: false, openedAt: today(), openDays: CARE_TYPES.solution.openDays, notes: '', photos: [] };
   if (existing) f.opened = !!existing.openedAt;
+  for (const k of ['name', 'volume', 'notes', 'expiry']) if (f[k] == null) f[k] = '';
+  f.photos = f.photos || [];
   if (existing && !existing.openedAt) f.openedAt = today();
   const sh = sheet(isNew ? '添加护理品' : '编辑护理品', '', { foot: `${!isNew ? '<button class="btn ghost danger-t" data-f="del">删除</button>' : ''}<button class="btn primary grow" data-f="save">保存</button>` });
   const draw = () => {
@@ -719,6 +723,8 @@ function careForm(existing) {
 function wishForm(existing) {
   const isNew = !existing;
   const f = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), brand: '', series: '', color: '', cycle: '', tone: '', price: '', shop: '', link: '', priority: 2, photos: [], notes: '' };
+  for (const k of ['brand', 'series', 'color', 'cycle', 'shop', 'link', 'notes']) if (f[k] == null) f[k] = '';
+  f.photos = f.photos || [];
   const sh = sheet(isNew ? '添加心愿' : '编辑心愿', '', { foot: `${!isNew ? '<button class="btn ghost danger-t" data-f="del">删除</button>' : ''}<button class="btn primary grow" data-f="save">保存</button>` });
   const draw = () => {
     const opts = f.brand && f.color ? cyclesFor(f.brand, f.color, S.learned, f.series) : CYCLE_KEYS;
@@ -1017,7 +1023,7 @@ const ACTS = {
     render();
   },
   notify: async () => {
-    if (!('Notification' in window)) { toast(IOS ? '请先“添加到主屏幕”，再从主屏幕打开 Lensy 开启' : '这个浏览器不支持通知'); return; }
+    if (!('Notification' in window)) { toast(IOS ? '请先 Share → Add to Home Screen，再从主屏幕打开 Lensy 开启' : '这个浏览器不支持通知'); return; }
     if (S.settings.notify && Notification.permission === 'granted') {
       if (await ask('关闭通知', '关闭后打开 App 时不会再推送提醒。', '关闭')) { S.settings.notify = false; await saveSettings(); render(); }
       return;
@@ -1025,7 +1031,7 @@ const ACTS = {
     const p = await Notification.requestPermission();
     S.settings.notify = p === 'granted';
     await saveSettings();
-    toast(p === 'granted' ? '通知已开启 🔔' : '没有获得通知权限，可以在手机设置里打开');
+    toast(p === 'granted' ? '通知已开启 🔔' : '没有获得通知权限，可以在 Settings › Notifications › Lensy 里打开');
     render();
     notifyDue();
   },
@@ -1060,27 +1066,27 @@ const ACTS = {
 
 // ---------- import from Apple Reminders ----------
 const HOWTO = `<ol class="howto">
-  <li>打开「快捷指令」App，点右上角 <b>＋</b> 新建，命名为「导出到 Lensy」。</li>
-  <li>添加操作 <b>查找提醒事项</b> → 点“添加过滤条件” → 设为 <b>列表 是 眼珠珠</b>（换成你的清单名）。</li>
-  <li>添加 <b>重复每一项</b>，对象选上一步的「提醒事项」。</li>
-  <li>在“重复”里面添加 <b>文本</b>，照下面四行填写。〔 〕是变量：点键盘上方的「重复项目」插入，再点一下它选对应的项目：
+  <li>打开 <b>Shortcuts</b> App，点右上角 <b>+</b> 新建，名字填 <b>Export to Lensy</b>。</li>
+  <li>点 <b>Search Actions</b>，搜索并添加 <b>Find Reminders</b> → 点 <b>Add Filter</b> → 设为 <b>List</b> <b>is</b> <b>眼珠珠</b>（换成你的清单名）。</li>
+  <li>添加 <b>Repeat with Each</b>，它会自动用上一步的 <b>Reminders</b>。</li>
+  <li>在 Repeat 里面添加 <b>Text</b>，照下面四行填写。〔 〕是变量：在键盘上方点 <b>Repeat Item</b> 插入，再点一下这个蓝色变量，选对应的项目（<b>Title</b> / <b>Notes</b> / <b>Is Completed</b>）：
     <pre>@@ITEM
-@@TITLE 〔重复项目 › 标题〕
-@@NOTES 〔重复项目 › 备注〕
-@@DONE 〔重复项目 › 已完成〕</pre></li>
-  <li>接着添加 <b>添加到变量</b>，变量名填 <b>输出</b>。</li>
-  <li>还在“重复”里面，添加 <b>获取提醒事项的详细信息</b>，选「图像」，对象选「重复项目」。</li>
-  <li>再添加一个 <b>重复每一项</b>（对象是这些图像），在里面依次添加：
-    <b>调整图像大小</b>（宽度 800）→ <b>转换图像</b>（JPEG）→ <b>Base64 编码</b>（点“显示更多”，换行选“无”）→ <b>文本</b> 填 <code>@@IMG 〔Base64 编码结果〕</code> → <b>添加到变量</b>「输出」。</li>
-  <li>在所有“重复”的外面、最下方添加 <b>合并文本</b>（合并「输出」，用“换行”）→ <b>存储文件</b>（打开“询问存储位置”）。</li>
-  <li>运行一次，把文件存到「文件 › 我的 iPhone」，回来点上面的「选择导出的文件」。</li>
+@@TITLE 〔Repeat Item › Title〕
+@@NOTES 〔Repeat Item › Notes〕
+@@DONE 〔Repeat Item › Is Completed〕</pre></li>
+  <li>接着添加 <b>Add to Variable</b>，<b>Variable Name</b> 填 <b>Output</b>。</li>
+  <li>还在 Repeat 里面，添加 <b>Get Details of Reminders</b>，点 <b>Detail</b> 选 <b>Images</b>，后面的对象选 <b>Repeat Item</b>。</li>
+  <li>再添加一个 <b>Repeat with Each</b>（对象是上一步的 <b>Images</b>），在它里面依次添加：
+    <b>Resize Image</b>（Width 填 800）→ <b>Convert Image</b>（选 <b>JPEG</b>）→ <b>Base64 Encode</b>（点 <b>Show More</b>，<b>Line Breaks</b> 选 <b>None</b>）→ <b>Text</b> 填 <code>@@IMG 〔Base64 Encoded〕</code> → <b>Add to Variable</b>（<b>Output</b>）。里面这一层的变量叫 <b>Repeat Item 2</b>。</li>
+  <li>在最后一个 <b>End Repeat</b> 下面（两层 Repeat 的外面）添加 <b>Combine Text</b>（Text 选 <b>Output</b>，用 <b>New Lines</b>）→ <b>Save File</b>（打开 <b>Ask Where to Save</b>）。</li>
+  <li>点右下角 ▶ 运行，保存到 <b>Files › On My iPhone</b>，再回来点上面的「选择导出的文件」。</li>
 </ol>
-<p class="muted sm">· 如果第 6 步里没有「图像」可选，跳过第 6、7 步，只导入文字，照片之后在 Lensy 里补。<br>· 以后清单有更新，再运行一次快捷指令、再导入即可，已有的会自动跳过。</p>`;
+<p class="muted sm">· 如果第 6 步的 <b>Detail</b> 里没有 <b>Images</b>，跳过第 6、7 步，只导入文字，照片之后在 Lensy 里补。<br>· 第一次运行时 iPhone 会问是否允许访问 Reminders，点 <b>Allow</b>。<br>· 以后清单有更新，再运行一次快捷指令、再导入即可，已有的会自动跳过。</p>`;
 
 function importSheet() {
-  const sh = sheet('从「提醒事项」导入', `<p class="ask">网页 App 不能直接读取「提醒事项」，所以要先用一个「快捷指令」把清单和图片导出成文件（只需设置一次），再在这里选择那个文件。</p>
+  const sh = sheet('从 Reminders 导入', `<p class="ask">网页 App 不能直接读取 Reminders，所以要先用一个 Shortcuts 快捷指令把清单和图片导出成文件（只需设置一次），再在这里选择那个文件。</p>
     <button class="btn primary block" data-f="file">📄 选择导出的文件</button>
-    <details class="howto-box"><summary>第一次用？设置快捷指令（约 3 分钟）</summary>${HOWTO}</details>
+    <details class="howto-box"><summary>第一次用？设置 Shortcuts 快捷指令（约 3 分钟）</summary>${HOWTO}</details>
     <h4>或者直接粘贴文字（不含图片）</h4>
     <textarea name="paste" rows="6" placeholder="拉拜诗 新晋 OL&#10;月&#10;Glam Up 琥珀光&#10;半&#10;愿望清单&#10;Neo 浪漫蓝调"></textarea>
     <p class="muted sm">每行一个美瞳，下一行可以写周期（日 / 月 / 半 / 年）。“愿望清单”这一行以下的会放进心愿单。</p>
@@ -1206,7 +1212,7 @@ function calendarSheet(ics, name, gcal) {
       ${IOS ? '<button class="btn primary block" data-cal="open">加入 iPhone 日历</button>' : ''}
       <button class="btn ${IOS ? 'soft' : 'primary'} block" data-cal="file">${IOS ? '分享 .ics 文件' : '下载日历文件 (.ics)'}</button>
       ${gcal ? `<a class="btn soft block" href="${gcal}" target="_blank" rel="noopener">加到 Google 日历</a>` : ''}</div>
-      <p class="muted sm">提示：以后开封新的一副、换了护理品，再导出一次即可（同一个提醒不会重复）。${IOS ? '如果“加入 iPhone 日历”没反应，请在 Safari 里打开 Lensy 再试。' : '下载后点开文件，选择用日历打开。'}</p>` : '<p class="muted">目前没有未来的提醒。</p>'}`, { cls: 'small' });
+      <p class="muted sm">提示：以后开封新的一副、换了护理品，再导出一次即可（同一个提醒不会重复）。${IOS ? '点“加入 iPhone 日历”后，在弹出的页面点 <b>Add All</b>。如果没反应，请在 Safari 里打开 Lensy 再试；用“分享 .ics 文件”时在分享菜单里选 <b>Calendar</b>。' : '下载后点开文件，选择用日历打开。'}</p>` : '<p class="muted">目前没有未来的提醒。</p>'}`, { cls: 'small' });
   sh.el.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-cal]');
     if (!b) return;
@@ -1269,6 +1275,9 @@ document.addEventListener('change', async (e) => {
   toast('已保存');
 });
 window.addEventListener('hashchange', render);
+// No zooming. Double-tap zoom is turned off by touch-action in app.css; iOS ignores user-scalable=no,
+// so pinch gestures are stopped here too (except in the full-screen photo viewer).
+document.addEventListener('gesturestart', (e) => { if (!(e.target.closest && e.target.closest('.sheet.photo'))) e.preventDefault(); }, { passive: false });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('.sheet-wrap')) render(); });
 setInterval(() => {
   $$('[data-since]').forEach((el) => { el.textContent = dur(Date.now() - new Date(el.dataset.since)); });

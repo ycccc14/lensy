@@ -1,7 +1,7 @@
 // Offline cache for the app shell. Bump VERSION whenever any file changes.
-const VERSION = 'lensy-v1.1.0';
+const VERSION = 'lensy-v1.2.0';
 const FILES = ['./', 'index.html', 'app.css', 'manifest.webmanifest', 'js/app.js', 'js/db.js', 'js/logic.js', 'js/catalog.js', 'js/style.js', 'js/importer.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/maskable-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

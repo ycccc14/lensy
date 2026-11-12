@@ -185,7 +185,7 @@ test('suggestions depend on tone, size and name', () => {
   assert.equal(g.searches.length, 3);
   assert.ok(g.searches[0].q.includes('Moody') && g.searches[0].q.includes('冰川灰') && g.searches[0].q.includes('上眼'));
   assert.ok(g.searches[0].app.startsWith('xhsdiscover://search/result?keyword='));
-  assert.ok(g.searches[0].web.startsWith('https://www.xiaohongshu.com/search_result?keyword='));
+  assert.equal(g.searches[0].web, undefined, 'no web version, only the app');
   const b = suggest({ brand: '安视优', color: 'Natural Shine 自然亮棕', tone: 'brown', dia: 14.2 });
   assert.ok(b.searches[0].q.includes('自然亮棕'), 'uses the Chinese part of the colour name');
   assert.notDeepEqual(g.formula, b.formula);

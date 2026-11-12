@@ -2,9 +2,9 @@
 import * as DB from './db.js';
 import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, CURRENCIES, CUR_KEYS, curOf, convert, isDailyDrops, fixCare, findBrand, colorsFor, specFor, cyclesFor, guessTone } from './catalog.js';
 import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
-import { suggest, xhsApp, xhsWeb } from './style.js';
+import { suggest, xhsApp } from './style.js';
 
-const VERSION = '1.3.4';
+const VERSION = '1.3.5';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
@@ -209,7 +209,7 @@ const powerSelect = (name, val, attrs) => `<select name="${name}" ${attrs || ''}
 const bar = (frac, cls) => `<div class="prog ${cls || ''}"><i style="width:${Math.max(3, Math.min(100, frac * 100)).toFixed(1)}%"></i></div>`;
 const firstPhoto = (x) => (x.photos || []).find((p) => kindOf(p) === 'mine') || (x.photos || [])[0];
 const thumbOf = (x, cls) => (firstPhoto(x) ? `<img class="thumb ${cls || ''}" src="${photoSrc(firstPhoto(x))}" alt="">` : `<div class="thumb ${cls || ''} noimg">${iris(x.tone, 'lg')}</div>`);
-const xhsButtons = (q, label) => `<div class="xhs"><a class="btn xhs-btn" href="${xhsApp(q)}">📕 ${esc(label || '小红书')}</a><a class="btn ghost sm" href="${xhsWeb(q)}" target="_blank" rel="noopener">网页版</a></div>`;
+const xhsButtons = (q, label) => `<div class="xhs"><a class="btn xhs-btn" href="${xhsApp(q)}">📕 ${esc(label || '小红书')}</a></div>`;
 
 // ---------- screens ----------
 function greet() { const h = new Date().getHours(); return h < 5 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好'; }
@@ -386,7 +386,7 @@ function styleCard(sg) {
     <div><span>适合</span><div>${sg.scenes.map(esc).join(' · ')}</div></div><div><span>发色</span><div>${esc(sg.hair)}</div></div><div><span>穿搭</span><div>${esc(sg.outfit)}</div></div></div>
     <ul class="tips">${sg.tips.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
     <h4>去小红书看真人上眼 & 妆容</h4>
-    ${sg.searches.map((s) => `<div class="xrow"><span>${esc(s.label)}<small>${esc(s.q)}</small></span><a class="btn xhs-btn sm" href="${s.app}">📕 App</a><a class="btn ghost sm" href="${s.web}" target="_blank" rel="noopener">网页</a></div>`).join('')}
+    ${sg.searches.map((s) => `<div class="xrow"><span>${esc(s.label)}<small>${esc(s.q)}</small></span><a class="btn xhs-btn sm" href="${s.app}">📕 小红书</a></div>`).join('')}
   </section>`;
 }
 

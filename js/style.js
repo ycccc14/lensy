@@ -181,8 +181,7 @@ export function xhsSearches(l, tags) {
     { label: '妆容搭配', q: `${brand} ${short} 妆容`.trim() },
     { label: '同色系推荐', q: `${tone}美瞳 ${(tags && tags[0]) || ''} 妆容`.trim() },
   ];
-  return list.map((x) => ({ ...x, app: xhsApp(x.q), web: xhsWeb(x.q) }));
+  return list.map((x) => ({ ...x, app: xhsApp(x.q) }));
 }
 
 export const xhsApp = (q) => `xhsdiscover://search/result?keyword=${encodeURIComponent(q)}`;
-export const xhsWeb = (q) => `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(q)}&source=web_search_result_notes`;

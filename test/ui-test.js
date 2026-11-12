@@ -255,7 +255,8 @@ try {
   const detail = await js('document.body.innerText');
   assert.ok(detail.includes('风格 & 搭配建议') && detail.includes('眼影') && detail.includes('去小红书'));
   assert.ok(await js('[...document.querySelectorAll("a[href^=\\"xhsdiscover://\\"]")].length === 3'));
-  assert.ok(await js('decodeURIComponent(document.querySelector("a[href*=\\"xiaohongshu.com\\"]").href).includes("Moody 冷泡乌龙茶 上眼")'));
+  assert.ok(await js('[...document.querySelectorAll("a[href^=\\"xhsdiscover://\\"]")].some((a) => decodeURIComponent(a.href).includes("Moody 冷泡乌龙茶 上眼"))'));
+  assert.ok(await js('!document.querySelector("a[href*=\\"xiaohongshu.com\\"]") && !document.body.innerText.includes("网页")'), 'only the app button, no web option');
   await full('07-detail');
   await noOverflow('detail');
   await tap('[data-act=add-inspo]');

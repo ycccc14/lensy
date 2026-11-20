@@ -30,7 +30,7 @@ export const DEFAULT_SETTINGS = {
 
 export const isLong = (cycle) => cycle !== 'daily';
 export const cycleDays = (cycle) => (CYCLES[cycle] ? CYCLES[cycle].days : 30);
-export const lensName = (l) => `${l.brand || '未命名'}${l.color ? ' · ' + l.color : ''}`;
+export const lensName = (l) => (l.color && l.brand ? `${l.color} · ${l.brand}` : l.color || l.brand || '未命名');
 
 export const activePairs = (l) => (l.pairs || []).filter((p) => p.status === 'using');
 export const pairEnd = (l, p) => p.endAt || addDays(p.openedAt, cycleDays(l.cycle));

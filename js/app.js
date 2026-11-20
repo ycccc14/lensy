@@ -4,7 +4,7 @@ import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, 
 import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
 import { suggest, xhsApp } from './style.js';
 
-const VERSION = '1.3.5';
+const VERSION = '1.3.6';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
@@ -246,7 +246,7 @@ function wearCard() {
       const off = new Date(start.getTime() + S.settings.maxHours * 3600000);
       const frac = (Date.now() - start) / (S.settings.maxHours * 3600000);
       return `<section class="card wearing">
-        <div class="row">${thumbOf(l, 'md')}<div class="grow"><div class="label">正在佩戴</div><b>${esc(lensName(l))}</b>
+        <div class="row">${thumbOf(l, 'md')}<div class="grow"><div class="label">正在佩戴</div><b>${esc(l.color || l.brand || '')}</b>${l.color && l.brand ? `<div class="sm">${esc(l.brand)}</div>` : ''}
         <div class="muted">已戴 <span data-since="${w.start}">${dur(Date.now() - start)}</span> · 建议 ${hm(off)} 前摘下</div></div></div>
         ${bar(frac, frac >= 1 ? 'red' : frac > 0.8 ? 'amber' : '')}
         <div class="btns"><button class="btn primary" data-act="wear-stop">摘下 👋</button><a class="btn ghost" href="#lens/${l.id}">详情</a></div></section>`;
@@ -300,7 +300,7 @@ function inspoCard() {
   if (!l) return '';
   const sg = suggest(l);
   return `<h2 class="sec">今日妆容灵感</h2><section class="card inspo">
-    <div class="row">${iris(l.tone, 'lg')}<div class="grow"><b>${esc(lensName(l))}</b><div class="tags">${sg.tags.slice(0, 4).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></div>
+    <div class="row">${iris(l.tone, 'lg')}<div class="grow"><b>${esc(l.color || l.brand || '')}</b>${l.color && l.brand ? `<div class="sm">${esc(l.brand)}</div>` : ''}<div class="tags">${sg.tags.slice(0, 4).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div></div></div>
     <p class="formula">💄 ${esc(sg.formula)}</p>${xhsButtons(sg.searches[0].q, '小红书看上眼图')}
     <a class="more" href="#lens/${l.id}">完整搭配建议 ›</a></section>`;
 }
@@ -440,7 +440,7 @@ function LensDetail(id) {
   const pastPairs = (l.pairs || []).filter((p) => p.status === 'done');
   return `<header class="bar"><button class="back" data-act="back" aria-label="返回">‹</button><b>美瞳详情</b><button class="btn ghost sm" data-act="edit-lens" data-id="${l.id}">编辑</button></header>
   ${photos}
-  <div class="lhead"><h1>${esc(l.brand)}</h1><div class="lcolor">${iris(l.tone)}${esc(l.color || '')}</div>
+  <div class="lhead"><h1>${esc(l.color || l.brand || '')}</h1>${l.color && l.brand ? `<div class="lcolor">${iris(l.tone)}${esc(l.brand)}</div>` : ''}
   <div class="tags"><span class="tag">${CYCLES[l.cycle].label}</span><span class="tag">${TONES[l.tone] ? TONES[l.tone].label : ''}</span><span class="tag st-${st}">${stLabel}</span>${l.series ? `<span class="tag">${esc(l.series)}</span>` : ''}</div></div>
   ${pairCards}${stock}
   <section class="card"><h3>产品资料</h3><div class="specs">
@@ -489,7 +489,7 @@ function WishDetail(id) {
   const mm = (v) => (v ? v + 'mm' : '');
   return `<header class="bar"><button class="back" data-act="back" aria-label="返回">‹</button><b>心愿详情</b><button class="btn ghost sm" data-act="edit-wish" data-id="${w.id}">编辑</button></header>
   ${photos}
-  <div class="lhead"><h1>${esc(w.brand || '未选品牌')}</h1>${w.color ? `<div class="lcolor">${iris(w.tone)}${esc(w.color)}</div>` : ''}
+  <div class="lhead"><h1>${esc(w.color || w.brand || '未选品牌')}</h1>${w.color && w.brand ? `<div class="lcolor">${iris(w.tone)}${esc(w.brand)}</div>` : ''}
   <div class="tags">${w.cycle && CYCLES[w.cycle] ? `<span class="tag">${CYCLES[w.cycle].label}</span>` : ''}${TONES[w.tone] ? `<span class="tag">${TONES[w.tone].label}</span>` : ''}${w.series ? `<span class="tag">${esc(w.series)}</span>` : ''}${w.priority ? `<span class="tag pink">${'♥'.repeat(w.priority)}</span>` : ''}</div></div>
   <section class="card"><h3>资料</h3><div class="specs">
     ${spec('价格', priceText(w), 'full')}${spec('在哪买', w.shop, 'full')}

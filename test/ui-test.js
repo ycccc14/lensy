@@ -95,7 +95,7 @@ try {
   assert.equal(moody.qty, 2); assert.equal(moody.pairs.length, 1); assert.equal(moody.pairs[0].openedAt, addDays(T, -176));
   await go('#home');
   let home = await js('document.querySelector(".rems").innerText');
-  assert.ok(home.includes('冷泡乌龙茶 还剩 4 天'), home);
+  assert.ok(home.includes('冷泡乌龙茶 · Moody 还剩 4 天'), home);
   assert.ok(home.includes('该换护理液了'), home);
   await full('04-home-reminders');
   await tap('.rem [data-act=soak]');

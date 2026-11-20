@@ -469,7 +469,7 @@ function Wish() {
     const q = `${w.brand || ''} ${(w.color || '').split(' ').find((x) => /[一-龥]/.test(x)) || w.color || ''} 上眼`.trim();
     return `<div class="card wcard">
       <div class="wimg" data-act="open-wish" data-id="${w.id}">${w.photos && w.photos[0] ? `<img src="${photoSrc(w.photos[0])}" alt="">` : iris(w.tone, 'xl')}${w.priority ? `<span class="pri">${'♥'.repeat(w.priority)}</span>` : ''}</div>
-      <div class="wbody" data-act="open-wish" data-id="${w.id}"><b>${esc(w.brand || '')}</b><div class="sm">${esc(w.color || '')}</div>
+      <div class="wbody" data-act="open-wish" data-id="${w.id}"><b>${esc(w.color || w.brand || '')}</b>${w.color && w.brand ? `<div class="sm">${esc(w.brand)}</div>` : ''}
       <div class="muted sm">${[w.cycle && CYCLES[w.cycle] ? CYCLES[w.cycle].label : '', money(w.price, w.priceCur)].filter(Boolean).join(' · ')}</div></div>
       <div class="wact"><a class="btn xhs-btn sm" href="${xhsApp(q)}">📕</a><button class="btn primary sm" data-act="wish-bought" data-id="${w.id}">买到了</button></div></div>`;
   }).join('') : '<div class="empty wide">把下次想买的美瞳存起来，附上图片和价格<br><button class="btn primary" data-act="add-wish">＋ 添加心愿</button></div>'}</div>`;

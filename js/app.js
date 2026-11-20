@@ -347,7 +347,7 @@ function lensCard(l) {
     line = `库存 ${l.qty} 片${l.expiry ? ` · 有效期 ${l.expiry}` : ''}`;
   }
   return `<a class="card lcard" href="#lens/${l.id}" data-q="${esc((l.brand + ' ' + l.color + ' ' + (l.series || '')).toLowerCase())}">
-    ${thumbOf(l)}<div class="grow"><b>${esc(l.brand)}</b><div class="color">${iris(l.tone, 'sm')}${esc(l.color || '')}</div>
+    ${thumbOf(l)}<div class="grow"><b>${esc(l.color || l.brand || '')}</b>${l.color && l.brand ? `<div class="color">${iris(l.tone, 'sm')}${esc(l.brand)}</div>` : ''}
     <div class="tags"><span class="tag">${CYCLES[l.cycle] ? CYCLES[l.cycle].label : ''}</span>${l.powerL && l.powerL !== '0.00' ? `<span class="tag">${esc(l.powerL === l.powerR ? l.powerL : l.powerL + '/' + l.powerR)}</span>` : ''}</div>
     <div class="muted sm">${esc(line)}</div>${prog}</div></a>`;
 }

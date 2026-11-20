@@ -40,7 +40,11 @@ export async function openPhone({ port = 9344, shots, dark = false } = {}) {
   const screen = () => js(`JSON.stringify({ view: document.querySelector('#view').innerText.slice(0, 400), sheet: [...document.querySelectorAll('.sheet-wrap')].map((s) => s.innerText.slice(0, 300)), toast: document.querySelector('#toast').textContent })`);
   const until = async (expr, what, ms) => {
     const end = Date.now() + (ms || 6000);
-    while (Date.now() < end) { if (await js(expr)) return; await sleep(80); }
+    while (Date.now() < end) {
+      // A page mid-navigation can briefly have no documentElement; keep waiting instead of failing.
+      try { if (await js(expr)) return; } catch (e) { if (Date.now() >= end - 80) throw e; }
+      await sleep(80);
+    }
     throw new Error(`Timed out waiting for: ${what}\n  on screen: ${await screen()}`);
   };
   const metrics = (height) => send('Emulation.setDeviceMetricsOverride', { width: 390, height, deviceScaleFactor: 2, mobile: true });

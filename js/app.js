@@ -3,14 +3,21 @@ import * as DB from './db.js';
 import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, CURRENCIES, CUR_KEYS, curOf, convert, isDailyDrops, fixCare, findBrand, colorsFor, specFor, cyclesFor, guessTone } from './catalog.js';
 import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
 import { suggest, xhsApp } from './style.js';
+import { openViewer } from './viewer.js';
+import { cropBox } from './autocrop.js';
+import { cleanBackup } from './backup.js';
 
-const VERSION = '1.3.6';
+const VERSION = '1.4.1';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Only web links can be tapped (a link without https:// gets it added); anything else, like javascript:,
+// is shown as plain text.
+const webUrl = (u) => { const s = String(u || '').trim(); return /^https?:\/\/[^\s"'<>]+$/i.test(s) ? s : /^[\w-]+(\.[\w-]+)+([/?#][^\s"'<>]*)?$/.test(s) ? 'https://' + s : ''; };
+const linkTo = (u) => { const s = String(u || ''); const label = esc(s.length > 42 ? s.slice(0, 42) + '…' : s); const href = webUrl(s); return href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${label}</a>` : `<span>${label}</span>`; };
 const dispCur = () => curOf(S.settings.currency);
 const fmtNum = (n) => (Math.round(Number(n) * 100) / 100).toFixed(2).replace(/\.00$/, '');
 // money(n, cur): an amount in its own currency (default: the display currency).
@@ -89,14 +96,48 @@ function sheet(title, html, opts) {
       if (closed) return;
       closed = true;
       wrap.className = 'sheet-closing'; // no longer counts as an open sheet
-      setTimeout(() => wrap.remove(), 220);
+      setTimeout(() => wrap.remove(), 320);
       if (opts.onClose) opts.onClose();
     },
   };
   wrap.addEventListener('click', (e) => {
     if (e.target.classList.contains('sheet-bg') || e.target.closest('[data-close]')) api.close();
   });
+  dragToClose($('.sheet', wrap), $('.sheet-head', wrap), $('.sheet-bg', wrap), () => api.close());
   return api;
+}
+
+// Pull a sheet down by its top bar: it follows the finger, and a long or quick pull closes it.
+function dragToClose(sh, handle, bg, close) {
+  let d = null;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    d = { y: e.clientY, last: e.clientY, t: performance.now(), v: 0, dy: 0 };
+    try { handle.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
+    sh.classList.add('dragging');
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!d) return;
+    const now = performance.now();
+    d.v = (e.clientY - d.last) / Math.max(8, now - d.t);
+    d.last = e.clientY;
+    d.t = now;
+    const raw = e.clientY - d.y;
+    d.dy = raw > 0 ? raw : -Math.sqrt(-raw) * 2; // upwards it only stretches a little
+    sh.style.transform = `translateY(${d.dy}px)`;
+    if (bg) bg.style.opacity = String(Math.max(0.2, 1 - Math.max(0, d.dy) / (sh.offsetHeight || 600)));
+  });
+  const end = () => {
+    if (!d) return;
+    const { dy, v } = d;
+    d = null;
+    sh.classList.remove('dragging');
+    sh.style.transform = '';
+    if (bg) bg.style.opacity = '';
+    if (dy > Math.min(140, sh.offsetHeight * 0.3) || (v > 0.55 && dy > 10)) close();
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
 }
 
 function ask(title, msg, ok, danger) {
@@ -146,8 +187,8 @@ const readText = (file) => new Promise((resolve, reject) => { const r = new File
 const loadImg = (src) => new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('图片读取失败')); i.src = src; });
 // Sharp resize: halve step by step (one big jump drops detail and looks blurry), high-quality smoothing.
 function shrink(img, max, q) {
-  let w = img.naturalWidth;
-  let h = img.naturalHeight;
+  let w = img.naturalWidth || img.width;
+  let h = img.naturalHeight || img.height;
   const k = Math.min(1, max / Math.max(w, h));
   const W = Math.round(w * k);
   const H = Math.round(h * k);
@@ -169,17 +210,46 @@ function shrink(img, max, q) {
 }
 const PHOTO_MAX = 2000; // long side of the stored photo (full screen on any phone stays sharp)
 const THUMB_MAX = 800; // grid tiles and cards (≈ 3× their on-screen size)
-// kind: 'mine' (我的佩戴效果) or 'web' (网图: shop / 小红书 pictures)
+// The part of a picture inside box (fractions), as a canvas at full resolution.
+function cropTo(img, box) {
+  const W = img.naturalWidth || img.width;
+  const H = img.naturalHeight || img.height;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(box.w * W));
+  c.height = Math.max(1, Math.round(box.h * H));
+  c.getContext('2d').drawImage(img, box.x * W, box.y * H, c.width, c.height, 0, 0, c.width, c.height);
+  return c;
+}
+const makePhoto = (src, kind) => ({ full: shrink(src, PHOTO_MAX, 0.9), thumb: shrink(src, THUMB_MAX, 0.88), w: 2, kind: kind || 'mine' });
+// Auto-cropped photos remember the picture they came from while the form is open, so 「原图」 can undo it.
+const cropOrigin = new WeakMap(); // photo -> { img, cropped, other: the photo's other version (made on first switch) }
+// kind: 'mine' (我的佩戴效果) or 'web' (网图: shop / 小红书 pictures).
+// Screenshots are cut down to the photo in them and black bars are removed (js/autocrop.js).
 async function photosFromPicker(kind) {
   const files = await pickFiles('image/*', true);
   const out = [];
+  let cut = 0;
   for (const f of files) {
     try {
       const img = await loadImg(await readUrl(f));
-      out.push({ full: shrink(img, PHOTO_MAX, 0.9), thumb: shrink(img, THUMB_MAX, 0.88), w: 2, kind: kind || 'mine' });
+      const box = cropBox(img);
+      const p = makePhoto(box ? cropTo(img, box) : img, kind);
+      if (box) { cropOrigin.set(p, { img, cropped: true }); cut++; }
+      out.push(p);
     } catch (e) { toast('有一张图片读不了，换一张试试'); }
   }
+  if (cut) setTimeout(() => toast(`已自动裁好${cut > 1 ? ` ${cut} 张` : ''}截图 ✂️`), 300);
   return out;
+}
+// Swaps an auto-cropped photo for the whole picture, or back.
+function switchCrop(p) {
+  const o = cropOrigin.get(p);
+  if (!o) return p;
+  if (!o.other) {
+    o.other = makePhoto(o.img, p.kind);
+    cropOrigin.set(o.other, { img: o.img, cropped: !o.cropped, other: p });
+  }
+  return o.other;
 }
 // Photos saved before v1.3 have a 300px thumbnail that looks blurry when shown big: use the full picture.
 const photoSrc = (p) => (p.w ? p.thumb : p.full || p.thumb);
@@ -409,10 +479,11 @@ function LensDetail(id) {
   const photos = all.length ? gal('mine') + gal('web')
     : `<div class="gallery none" data-act="add-photo" data-id="${l.id}" data-kind="mine">${iris(l.tone, 'xl')}<span>＋ 添加我的佩戴效果</span></div><div class="btns center"><button class="btn ghost sm" data-act="add-photo" data-id="${l.id}" data-kind="web">＋ 添加网图</button></div>`;
   const per = Number(l.perWear) || 2;
-  const stock = st === 'done' && !l.qty ? '' : `<section class="card">
+  const stock = st === 'done' && !l.qty && !(S.settings.wearing && S.settings.wearing.lensId === l.id) ? '' : `<section class="card">
     <div class="row between"><div><div class="label">库存</div><div class="big">${l.qty || 0}<small> 片</small></div></div>
     <div class="stepper"><button data-act="qty" data-id="${l.id}" data-d="-1" aria-label="减一片">−</button><button data-act="qty" data-id="${l.id}" data-d="1" aria-label="加一片">＋</button><button class="wide" data-act="restock" data-id="${l.id}">+1盒</button></div></div>
-    <div class="btns">${!long && l.qty > 0 ? `<button class="btn primary" data-act="wear" data-id="${l.id}" data-pair="">今天戴这副（−${per}片）</button>` : ''}
+    <div class="btns">${!long && S.settings.wearing && S.settings.wearing.lensId === l.id ? '<button class="btn primary" data-act="wear-stop">摘下 👋</button>'
+      : !long && l.qty > 0 ? `<button class="btn primary" data-act="wear" data-id="${l.id}" data-pair="">今天戴这副（−${per}片）</button>` : ''}
     ${long && l.qty > 0 ? `<button class="btn ${ps.length ? 'soft' : 'primary'}" data-act="open-pair" data-id="${l.id}">开封新的一副</button>` : ''}
     <button class="btn ghost" data-act="log-wear" data-id="${l.id}">补记一次</button></div></section>`;
   const pairCards = ps.map((p, i) => {
@@ -450,7 +521,7 @@ function LensDetail(id) {
   </div>${l.notes ? `<p class="note">📝 ${esc(l.notes)}</p>` : ''}</section>
   ${styleCard(sg)}
   <section class="card"><div class="row between"><h3>我的灵感收藏</h3><button class="btn ghost sm" data-act="add-inspo" data-id="${l.id}">＋ 收藏</button></div>
-    ${(l.inspo || []).length ? `<div class="inspo-list">${l.inspo.map((x, i) => `<div class="ins">${x.img ? `<img src="${x.img}" data-act="inspo-img" data-id="${l.id}" data-i="${i}" alt="">` : ''}<div class="grow">${x.note ? `<p>${esc(x.note)}</p>` : ''}${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url.length > 42 ? x.url.slice(0, 42) + '…' : x.url)}</a>` : ''}</div><button class="x" data-act="del-inspo" data-id="${l.id}" data-i="${i}" aria-label="删除">✕</button></div>`).join('')}</div>`
+    ${(l.inspo || []).length ? `<div class="inspo-list">${l.inspo.map((x, i) => `<div class="ins">${x.img ? `<img src="${x.img}" data-act="inspo-img" data-id="${l.id}" data-i="${i}" alt="">` : ''}<div class="grow">${x.note ? `<p>${esc(x.note)}</p>` : ''}${x.url ? linkTo(x.url) : ''}</div><button class="x" data-act="del-inspo" data-id="${l.id}" data-i="${i}" aria-label="删除">✕</button></div>`).join('')}</div>`
       : '<p class="muted sm">在小红书看到喜欢的妆容？复制笔记链接或截图存到这里。</p>'}</section>
   <section class="card"><h3>佩戴记录 <small>${wears.length} 次</small></h3>
     ${wears.length ? `<ul class="hist">${wears.slice(0, 30).map((w) => `<li><span>${w.date}</span><span class="muted">${w.start ? hm(new Date(w.start)) : '补记'}${w.hours ? ` · ${w.hours.toFixed(1)} 小时` : w.start && !w.end ? ' · 佩戴中' : ''}</span><button class="x" data-act="del-wear" data-id="${w.id}" aria-label="删除这条">✕</button></li>`).join('')}</ul>` : '<p class="muted sm">还没有佩戴记录</p>'}
@@ -494,7 +565,7 @@ function WishDetail(id) {
   <section class="card"><h3>资料</h3><div class="specs">
     ${spec('价格', priceText(w), 'full')}${spec('在哪买', w.shop, 'full')}
     ${sp && sp.from !== 'none' ? spec('直径', mm(sp.dia)) + spec('着色直径', mm(sp.gdia)) + spec('基弧', mm(sp.bc)) + spec('含水量', sp.water ? sp.water + '%' : '') : ''}
-  </div>${w.link ? `<p class="note">🔗 <a href="${esc(w.link)}" target="_blank" rel="noopener">${esc(w.link.length > 42 ? w.link.slice(0, 42) + '…' : w.link)}</a></p>` : ''}${w.notes ? `<p class="note">📝 ${esc(w.notes)}</p>` : ''}
+  </div>${w.link ? `<p class="note">🔗 ${linkTo(w.link)}</p>` : ''}${w.notes ? `<p class="note">📝 ${esc(w.notes)}</p>` : ''}
   <div class="btns"><button class="btn primary" data-act="wish-bought" data-id="${w.id}">买到了</button><a class="btn xhs-btn" href="${xhsApp(q)}">📕 小红书看上眼</a></div></section>
   ${styleCard(suggest({ ...w, dia: sp && sp.dia, gdia: sp && sp.gdia }))}`;
 }
@@ -641,7 +712,7 @@ const field = (label, inner, hint) => `<div class="field"><label>${label}</label
 const input = (name, val, attrs) => `<input name="${name}" value="${esc(val == null ? '' : val)}" ${attrs || ''}>`;
 // kind: only show photos of this kind ('mine' / 'web'); new photos get that kind. def: kind of old photos without one.
 const photoGrid = (photos, kind, def) => `<div class="pgrid">${photos.map((p, i) => ({ p, i })).filter((x) => !kind || kindOf(x.p, def) === kind)
-  .map(({ p, i }) => `<div class="pg"><img src="${photoSrc(p)}" alt=""><button type="button" class="x" data-f="rmphoto" data-i="${i}" aria-label="删除照片">✕</button></div>`).join('')}<button type="button" class="pg add" data-f="photo" data-kind="${kind || 'mine'}">＋<small>${kind === 'web' ? '网图' : kind === 'mine' ? '佩戴照' : '照片'}</small></button></div>`;
+  .map(({ p, i }) => `<div class="pg"><img src="${photoSrc(p)}" alt=""><button type="button" class="x" data-f="rmphoto" data-i="${i}" aria-label="删除照片">✕</button>${cropOrigin.has(p) ? `<button type="button" class="crop-sw" data-f="cropsw" data-i="${i}">${cropOrigin.get(p).cropped ? '原图' : '裁剪'}</button>` : ''}</div>`).join('')}<button type="button" class="pg add" data-f="photo" data-kind="${kind || 'mine'}">＋<small>${kind === 'web' ? '网图' : kind === 'mine' ? '佩戴照' : '照片'}</small></button></div>`;
 const shopSearch = (q) => `https://s.taobao.com/search?q=${encodeURIComponent(q)}`;
 const toneChips = (cur) => `<div class="chips">${TONE_KEYS.map((k) => `<button type="button" class="chip ${cur === k ? 'on' : ''}" data-f="tone" data-v="${k}">${iris(k, 'xs')}${TONES[k].label}</button>`).join('')}</div>`;
 
@@ -737,6 +808,7 @@ function lensForm(existing, prefill, onSaved) {
     else if (k === 'per') { f.perWear = Number(b.dataset.v); draw(); }
     else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
+    else if (k === 'cropsw') { f.photos[+b.dataset.i] = switchCrop(f.photos[+b.dataset.i]); draw(); }
     else if (k === 'save') {
       if (!f.brand) { toast('请选择品牌'); return; }
       if (!f.color) { toast('请选择或输入花色'); return; }
@@ -811,6 +883,7 @@ function careForm(existing) {
     else if (k === 'dcycle') { f.openDays = Number(b.dataset.v); if (f.openDays > 1 && !f.opened) { f.opened = true; f.openedAt = f.openedAt || today(); } draw(); }
     else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
+    else if (k === 'cropsw') { f.photos[+b.dataset.i] = switchCrop(f.photos[+b.dataset.i]); draw(); }
     else if (k === 'del') { if (await ask('删除护理品', `确定删除「${f.name || CARE_TYPES[f.type].label}」吗？`, '删除', true)) { await remove('care', f.id); sh.close(); render(); } }
     else if (k === 'save') {
       const rec = existing ? { ...existing } : { id: f.id, createdAt: Date.now() };
@@ -864,6 +937,7 @@ function wishForm(existing) {
     else if (k === 'pri') { f.priority = Number(b.dataset.v); draw(); }
     else if (k === 'photo') { f.photos.push(...(await photosFromPicker(b.dataset.kind))); draw(); }
     else if (k === 'rmphoto') { f.photos.splice(+b.dataset.i, 1); draw(); }
+    else if (k === 'cropsw') { f.photos[+b.dataset.i] = switchCrop(f.photos[+b.dataset.i]); draw(); }
     else if (k === 'del') { if (await ask('删除心愿', '确定删除吗？', '删除', true)) { await remove('wish', f.id); sh.close(); if (location.hash.startsWith('#wishitem/')) location.hash = '#wish'; else render(); } }
     else if (k === 'save') {
       if (!f.brand && !f.color && !f.photos.length) { toast('至少选个品牌、花色或加张图'); return; }
@@ -880,9 +954,19 @@ function wishForm(existing) {
 }
 
 // ---------- actions ----------
+// A double tap on 「今天戴这副」 must not take pieces twice or log two wears: while one start is being saved
+// another is ignored, and the same lens started in the last minute counts as the same tap.
+let wearStarting = false;
 async function startWear(lensId, pairId) {
+  if (wearStarting) return;
+  wearStarting = true;
+  try { await startWearNow(lensId, pairId); } finally { wearStarting = false; }
+}
+async function startWearNow(lensId, pairId) {
   const l = lensById(lensId);
   if (!l) return;
+  const cur = S.settings.wearing;
+  if (cur && cur.lensId === l.id && (!pairId || cur.pairId === pairId) && Date.now() - new Date(cur.start) < 60000) { toast('已经戴上啦 ✨'); return; }
   if (S.settings.wearing) {
     if (!(await ask('正在佩戴另一副', '先把正在戴的摘下，再戴这副？', '摘下并换这副'))) return;
     await stopWear(true);
@@ -976,7 +1060,8 @@ const ACTS = {
   unarchive: async (d) => { const l = lensById(d.id); l.archived = false; l.archiveWhy = ''; await save('lenses', l); toast('已移回美瞳柜'); render(); },
   rebuy: (d) => { const l = lensById(d.id); lensForm(null, { brand: l.brand, series: l.series, color: l.color, cycle: l.cycle, tone: l.tone, photos: (l.photos || []).filter((p) => kindOf(p) === 'web').slice(0, 2), shop: l.shop, price: l.price, priceCur: curOf(l.priceCur), perWear: l.perWear, soakDays: l.soakDays, powerL: l.powerL, powerR: l.powerR }); },
   wear: (d) => startWear(d.id, d.pair),
-  'wear-stop': () => stopWear(),
+  // 「摘下」 appears where 「今天戴这副」 was: the second tap of a double tap must not take them straight off.
+  'wear-stop': () => { const w = S.settings.wearing; if (w && Date.now() - new Date(w.start) < 800) return; return stopWear(); },
   'open-pair': async (d) => {
     const l = lensById(d.id);
     if (!l.qty) { toast('没有库存了'); return; }
@@ -1046,7 +1131,11 @@ const ACTS = {
     $('[data-ok]', sh.el).onclick = async () => {
       const f = {};
       syncForm(sh.el, f);
-      const w = { id: uid(), lensId: l.id, date: f.date || today(), hours: Number(f.hours) || 0 };
+      // 「1,5」 (comma from a Chinese keyboard) means 1.5; a wear lasts 0–24 hours.
+      const raw = String(f.hours || '').trim().replace(/[,，。]/g, '.');
+      const hours = raw === '' ? 0 : Number(raw);
+      if (!Number.isFinite(hours) || hours < 0 || hours > 24) { toast('戴了多久请填 0～24 之间的小时数，例如 6 或 7.5'); return; }
+      const w = { id: uid(), lensId: l.id, date: f.date || today(), hours: Math.round(hours * 10) / 10 };
       if (f.pair) { w.pairId = f.pair; const p = ps.find((x) => x.id === f.pair); if (p && (!p.lastWorn || p.lastWorn < w.date)) p.lastWorn = w.date; }
       if (f.take && !isLong(l.cycle)) { const take = Math.min(Number(l.perWear) || 2, l.qty || 0); l.qty -= take; w.pieces = take; }
       l.wearCount = (l.wearCount || 0) + 1;
@@ -1067,8 +1156,8 @@ const ACTS = {
     await remove('wears', w.id);
     render();
   },
-  photo: (d, el) => viewPhoto(fullSrc(el), el),
-  'inspo-img': (d, el) => viewPhoto(fullSrc(el), el),
+  photo: (d, el) => openPhotos(el),
+  'inspo-img': (d, el) => openPhotos(el),
   'add-photo': async (d) => {
     const w = S.wish.find((x) => x.id === d.id);
     const l = w || lensById(d.id);
@@ -1174,12 +1263,18 @@ const ACTS = {
     const [file] = await pickFiles('application/json,.json', false);
     if (!file) return;
     let data;
-    try { data = JSON.parse(await readText(file)); if (data.app !== 'lensy') throw new Error(); } catch (e) { toast('这不是 Lensy 的备份文件'); return; }
-    const mode = await choose('导入备份', [{ label: '合并（保留手机上现有资料）', value: 'merge', cls: 'primary' }, { label: '覆盖（清空现有资料再导入）', value: 'replace', cls: 'danger' }], `备份时间 ${String(data.exportedAt || '').slice(0, 10)}，美瞳 ${(data.lenses || []).length} 款，护理品 ${(data.care || []).length} 个。`);
+    try { data = JSON.parse(await readText(file)); } catch (e) { toast('这不是 Lensy 的备份文件'); return; }
+    // Check the whole file before asking anything: a damaged or edited file is refused and nothing changes.
+    let n;
+    try { n = cleanBackup(data).counts; } catch (e) { await ask('无法导入', `${e.message}。这个文件可能被改过或已损坏，为了安全没有导入，手机上的资料没有任何改动。`, '知道了'); return; }
+    const date = /^\d{4}-\d{2}-\d{2}/.test(String(data.exportedAt)) ? `备份时间 ${data.exportedAt.slice(0, 10)}，` : '';
+    const mode = await choose('导入备份', [{ label: '合并（保留手机上现有资料）', value: 'merge', cls: 'primary' }, { label: '覆盖（清空现有资料再导入）', value: 'replace', cls: 'danger' }], `${date}美瞳 ${n.lenses} 款，护理品 ${n.care} 个，心愿 ${n.wish} 个，佩戴记录 ${n.wears} 条。`);
     if (!mode) return;
+    if (mode === 'replace' && (S.lenses.length || S.care.length || S.wish.length || S.wears.length)
+      && !(await ask('确定覆盖？', `手机上现有的 ${S.lenses.length} 款美瞳、${S.care.length} 个护理品、${S.wish.length} 个心愿和 ${S.wears.length} 条佩戴记录会被删除，换成备份里的资料，不能恢复。不确定的话请选「合并」。`, '删除并覆盖', true))) return;
     await DB.restore(data, mode);
     await load();
-    toast('导入完成');
+    toast(`导入完成：美瞳 ${n.lenses} 款，佩戴记录 ${n.wears} 条`);
     render();
   },
   wipe: async () => {
@@ -1193,8 +1288,19 @@ const ACTS = {
   },
 };
 
-// Photo zoom, two kinds:
-//   viewPhoto(src, from)  tap → full-screen viewer on black, tap again to close.
+// Tap a photo → full-screen viewer (js/viewer.js): it grows out of the photo, pinch / double-tap to zoom,
+// swipe to the record's other photos, pull down or tap to close.
+function openPhotos(el) {
+  const act = el.dataset.act;
+  const group = act === 'photo' || act === 'inspo-img' ? $$(`#view img[data-act="${act}"][data-id="${el.dataset.id}"]`) : [el];
+  const list = group.length ? group : [el];
+  const onHash = () => v.close();
+  const v = openViewer(list.map((g) => ({ src: fullSrc(g), from: g })), Math.max(0, list.indexOf(el)), { onClose: () => window.removeEventListener('hashchange', onHash) });
+  window.addEventListener('hashchange', onHash);
+  return v;
+}
+
+// Long-press preview:
 //   peekPhoto(src, from)  long-press → iOS / Instagram style preview: the picture pops up over the blurred
 //                          page while the finger is down; peek.close() on release shrinks it back.
 // The picture grows out of `from` (the thumbnail) and shrinks back into it, cropped the way the thumbnail is
@@ -1203,7 +1309,6 @@ const ACTS = {
 const PV_MS = 280;
 const PV_EASE = 'cubic-bezier(.2, .8, .2, 1)';
 const PEEK_IN = 'cubic-bezier(.3, 1.3, .6, 1)'; // a little spring, like the iPhone's preview
-const viewPhoto = (src, from) => zoomPhoto(src, from, false);
 const peekPhoto = (src, from) => zoomPhoto(src, from, true);
 async function zoomPhoto(src, from, peek) {
   if ($('.pv')) return null;
@@ -1308,7 +1413,7 @@ const release = (e) => {
 document.addEventListener('touchstart', (e) => {
   lpCancel();
   const img = e.touches.length === 1 && e.target.closest && e.target.closest('#view img');
-  if (!img || $('.pv')) return;
+  if (!img || $('.pv, .vw')) return;
   const t = e.touches[0];
   lp = { x: t.clientX, y: t.clientY, t: setTimeout(() => { lp = null; held = peekPhoto(fullSrc(img), img); }, 420) };
 }, { passive: true });
@@ -1427,14 +1532,31 @@ async function notifyDue() {
 
 // ---------- routing ----------
 const SCREENS = { home: Home, lenses: Lenses, lens: LensDetail, wish: Wish, wishitem: WishDetail, me: Me, stats: Stats };
-let lastRoute = '';
+const DEPTH = { lens: 1, wishitem: 1, stats: 1 }; // screens opened from another one (the rest are tabs)
+let lastRoute = null;
+// A new screen moves in: deeper screens from the right, back from the left, tabs rise in card by card.
+function enter(kind) {
+  const v = $('#view');
+  v.classList.remove('in-fwd', 'in-back', 'in-tab');
+  void v.offsetWidth; // restart the animation
+  v.classList.add(kind);
+  clearTimeout(enter.t);
+  enter.t = setTimeout(() => v.classList.remove(kind), 800);
+}
 function render() {
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
   const fn = SCREENS[name] || Home;
   const route = location.hash;
-  const y = route === lastRoute ? scrollY : 0;
+  const changed = route !== lastRoute;
+  const y = changed ? 0 : scrollY;
+  const prev = lastRoute == null ? null : (lastRoute.slice(1) || 'home').split('/')[0];
   lastRoute = route;
   $('#view').innerHTML = fn(arg);
+  if (changed) { // a plain redraw of the same screen (after saving etc.) doesn't move
+    const a = prev == null ? 0 : DEPTH[prev] || 0;
+    const b = DEPTH[name] || 0;
+    enter(b > a ? 'in-fwd' : b < a ? 'in-back' : 'in-tab');
+  }
   const tab = { lens: 'lenses', wishitem: 'wish', stats: 'me' }[name] || (SCREENS[name] ? name : 'home');
   $$('.tabs [data-tab]').forEach((t) => t.classList.toggle('on', t.dataset.tab === tab));
   scrollTo(0, y);
@@ -1443,13 +1565,19 @@ function render() {
   notifyDue();
 }
 
+// A second tap on the same button while its first tap is still saving is ignored (double taps used to add
+// +1盒 twice). The lock lets go after 2 s at most, so a cancelled photo picker never leaves a button dead.
+const busy = new WeakSet();
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const fn = ACTS[el.dataset.act];
   if (!fn) return;
   e.preventDefault();
-  try { await fn(el.dataset, el); } catch (err) { console.error(err); toast('出错了：' + (err.message || err)); }
+  if (busy.has(el)) return;
+  busy.add(el);
+  const t = setTimeout(() => busy.delete(el), 2000);
+  try { await fn(el.dataset, el); } catch (err) { console.error(err); toast('出错了：' + (err.message || err)); } finally { clearTimeout(t); busy.delete(el); }
 });
 document.addEventListener('change', async (e) => {
   const el = e.target.closest('[data-set]');
@@ -1468,7 +1596,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   checkUpdate();
   pushSoon(300);
-  if (!$('.sheet-wrap') && !$('.pv')) render();
+  if (!$('.sheet-wrap') && !$('.pv, .vw')) render();
 });
 setInterval(() => {
   $$('[data-since]').forEach((el) => { el.textContent = dur(Date.now() - new Date(el.dataset.since)); });
@@ -1505,7 +1633,7 @@ async function checkUpdate() {
 }
 function reloadWhenIdle() {
   if (reloadWhenIdle.done) return;
-  if ($('.sheet-wrap') || $('.pv')) { setTimeout(reloadWhenIdle, 1500); return; } // don't lose a form being filled in
+  if ($('.sheet-wrap') || $('.pv, .vw')) { setTimeout(reloadWhenIdle, 1500); return; } // don't lose a form being filled in
   reloadWhenIdle.done = true;
   try { sessionStorage.setItem('lensy-updated', '1'); } catch (e) { /* ignore */ }
   location.reload();

@@ -13,6 +13,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.UI_PORT) || 8791; // 8790 is left for test/server.js
 const URL0 = `http://127.0.0.1:${PORT}/`;
 const PHOTO = path.join(HERE, 'fixtures', 'lens.jpg');
+const SHOT = path.join(HERE, 'fixtures', 'xhs-shot.jpg'); // fake 小红书 screenshot, photo at y 300-1860 (test/make-shot.py)
 const T = today();
 let step = 0;
 const ok = (name) => console.log(`  ✓ ${++step}. ${name}`);
@@ -56,12 +57,25 @@ try {
   ph.nextFiles([PHOTO]);
   await tap('[data-f=photo]', '佩戴照');
   await until('document.querySelector(".sheet-wrap .pgrid img")', 'photo from the picker');
+  // A 小红书 screenshot is cut down to the photo in it; 「原图」 brings the whole screenshot back, 「裁剪」 cuts again.
+  ph.nextFiles([SHOT]);
+  await tap('[data-f=photo]', '网图');
+  await until('document.querySelector(".sheet-wrap .crop-sw")', 'auto-cropped screenshot');
+  assert.equal(await js('document.querySelector(".sheet-wrap .crop-sw").textContent'), '原图');
+  await tap('.crop-sw');
+  await until('document.querySelector(".sheet-wrap .crop-sw").textContent === "裁剪"', 'switched to the whole screenshot');
+  await tap('.crop-sw');
+  await until('document.querySelector(".sheet-wrap .crop-sw").textContent === "原图"', 'cropped again');
   await full('02-form');
   await save();
   await until('location.hash.startsWith("#lens/")', 'detail page');
   const acuvue = await S('S.lenses[0]');
-  assert.equal(acuvue.cycle, '2week'); assert.equal(acuvue.qty, 6); assert.equal(acuvue.dia, 14); assert.equal(acuvue.photos.length, 1);
+  assert.equal(acuvue.cycle, '2week'); assert.equal(acuvue.qty, 6); assert.equal(acuvue.dia, 14); assert.equal(acuvue.photos.length, 2);
   assert.ok(acuvue.photos[0].full.startsWith('data:image/jpeg'));
+  const cut = await js(`new Promise((r) => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.src = window.__lensy.S.lenses[0].photos[1].full; })`);
+  assert.ok(Math.abs(cut[0] / cut[1] - 1170 / 1560) < 0.02, `screenshot saved as just its 3:4 photo (${cut})`);
+  const px = await js(`new Promise((r) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); c.width = i.naturalWidth; c.height = i.naturalHeight; const x = c.getContext('2d'); x.drawImage(i, 0, 0); r([...x.getImageData(5, 3, 1, 1).data.slice(0, 3), ...x.getImageData(5, c.height - 4, 1, 1).data.slice(0, 3)]); }; i.src = window.__lensy.S.lenses[0].photos[1].full; })`);
+  assert.ok(px.every((v, k) => Math.abs(v - [240, 220, 228, 240, 220, 228][k]) < 25), `no white app background left at the edges (${px})`);
   ok('add lens: brand → colour → choose cycle → specs filled → photo');
 
   // 2. Open a pair, wear it, take it off
@@ -73,6 +87,7 @@ try {
   await go('#home');
   assert.ok((await js('document.body.innerText')).includes('正在佩戴'));
   await shot('03-wearing');
+  await sleep(800); // 摘下 ignores a tap in the first 0.8 s (second half of a double tap)
   await tap('[data-act=wear-stop]');
   await until('!window.__lensy.S.settings.wearing', 'took off');
   const w = await S('S.wears[0]');
@@ -136,6 +151,7 @@ try {
   await tap('.pickl', 'Radiant Charm');
   await until('window.__lensy.S.settings.wearing', 'wearing daily');
   assert.equal(await S('S.lenses.find((l) => l.cycle === "daily").qty'), 28);
+  await sleep(800);
   await tap('[data-act=wear-stop]');
   await until('!window.__lensy.S.settings.wearing', 'off');
   ok('daily lens: wear uses 2 pieces');
@@ -243,10 +259,30 @@ try {
   assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").priceCur'), 'CNY');
   assert.equal(await S('S.lenses.find((l) => l.brand === "OLENS").photos[0].kind'), 'web', 'wishlist picture becomes a 网图');
   assert.ok((await js('document.body.innerText')).includes('网图') && (await js('document.body.innerText')).includes('我的佩戴效果'));
+  // Photo viewer: opens out of the photo, swipe to the lens's other photo (tap() taps the last photo), double-tap zoom, tap closes.
+  assert.equal(await js('document.querySelectorAll("#view img[data-act=photo]").length'), 2);
   await tap('[data-act=photo]');
-  await until('document.querySelector(".pv-img") && document.querySelector(".pv-img").naturalWidth > 0', 'tap opens the photo viewer');
-  await js('document.querySelector(".pv").click()');
-  await until('!document.querySelector(".pv") && document.querySelector("[data-act=photo]").style.visibility === ""', 'viewer closed');
+  await until('document.querySelector(".vw.ready") && document.querySelector(".vw-img").naturalWidth > 0', 'tap opens the photo viewer');
+  assert.equal(await js('document.querySelector(".vw-count").textContent'), '2 / 2');
+  assert.equal(await js('[...document.querySelectorAll("[data-act=photo]")].pop().style.visibility'), 'hidden', 'the photo flies out of its place on the page');
+  const pe = (type, x, y, id) => js(`document.querySelector('.vw').dispatchEvent(new PointerEvent('${type}', { pointerId: ${id || 1}, clientX: ${x}, clientY: ${y}, bubbles: true, isPrimary: ${!id || id === 1} }))`);
+  await pe('pointerdown', 80, 400); await pe('pointermove', 180, 405); await pe('pointermove', 300, 410); await pe('pointerup', 300, 410);
+  await until('document.querySelector(".vw-count").textContent === "1 / 2"', 'swiped to the first photo');
+  await sleep(450);
+  await pe('pointerdown', 195, 420); await pe('pointerup', 195, 420); await sleep(60); await pe('pointerdown', 195, 420); await pe('pointerup', 195, 420);
+  await until('[...document.querySelectorAll(".vw-img")][0].style.transform.includes("scale(2.5)")', 'double-tap zooms in');
+  await sleep(400);
+  // pinch: two fingers apart → bigger; back together below 1 → snaps back to fit
+  await pe('pointerdown', 150, 400, 1); await pe('pointerdown', 250, 400, 2); await pe('pointermove', 100, 400, 1); await pe('pointermove', 300, 400, 2);
+  assert.ok(await js(`[...document.querySelectorAll(".vw-img")][0].style.transform.includes("scale(5)")`), "pinch zooms further");
+  await pe('pointerup', 100, 400, 1); await pe('pointerup', 300, 400, 2);
+  await sleep(400);
+  await pe('pointerdown', 195, 420); await pe('pointerup', 195, 420); await sleep(60); await pe('pointerdown', 195, 420); await pe('pointerup', 195, 420);
+  await until('[...document.querySelectorAll(".vw-img")][0].style.transform.includes("scale(1)")', 'double-tap zooms out');
+  await sleep(400);
+  await shot('06d-viewer');
+  await pe('pointerdown', 195, 420); await pe('pointerup', 195, 420);
+  await until('!document.querySelector(".vw") && [...document.querySelectorAll("[data-act=photo]")].every((i) => i.style.visibility === "")', 'tap closes the viewer, photos back in place');
   ok('wishlist with photo (¥, portrait 3:4) → detail page (all pictures, style, 编辑) → bought → lens keeps currency, picture filed as 网图');
 
   // 8. Detail page with style suggestions and Xiaohongshu links
@@ -371,6 +407,80 @@ try {
   const last = (await js('window.__pushCalls')).pop();
   assert.ok(last.fn === 'sync' && last.items.filter((x) => !x.key.startsWith('wear:')).every((x) => new Date(x.at).getHours() === 21), 'new reminder time used');
   ok('push notifications: subscribe, schedule synced to the server, test, re-sync on change');
+
+  // 13. Backup files are checked before anything changes. An edited file (script hidden in an id) is refused
+  //     and the data stays; a javascript: link is shown as text; 覆盖 asks again; the push id + secret never
+  //     go into a file and survive an import.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lensy-'));
+  const counts = () => S('[S.lenses.length, S.care.length, S.wish.length, S.wears.length]');
+  const before13 = await counts();
+  const pushId = await S('S.settings.push.id');
+  fs.writeFileSync(path.join(tmp, 'evil.json'), JSON.stringify({ app: 'lensy', lenses: [{ id: 'x" autofocus onfocus="window.__pwned=1" a="', brand: 'Evil', color: 'x', cycle: 'daily', qty: 2 }] }));
+  await go('#me');
+  ph.nextFiles([path.join(tmp, 'evil.json')]);
+  await tap('[data-act=restore]');
+  await until('[...document.querySelectorAll(".sheet-wrap")].some((s) => s.innerText.includes("无法导入"))', 'edited backup refused');
+  assert.ok((await js('document.querySelector(".sheet-wrap").innerText')).includes('第 1 条美瞳'), 'says which record is wrong');
+  await tap('[data-ok]');
+  await sleep(300);
+  assert.deepEqual(await counts(), before13, 'nothing imported, nothing lost');
+  const dumped = await js('(async () => { const DB = await import("/js/db.js"); return DB.dump(); })()');
+  assert.equal(dumped.kv.find((r) => r.id === 'settings').value.push, null, 'backup file has no push id + secret');
+  dumped.wish.push({ id: 'Wevil', brand: 'Evil', color: 'Link', link: 'javascript:window.__pwned=2', photos: [], createdAt: 1 });
+  fs.writeFileSync(path.join(tmp, 'good.json'), JSON.stringify(dumped));
+  ph.nextFiles([path.join(tmp, 'good.json')]);
+  await tap('[data-act=restore]');
+  await until('document.querySelector(".choices")', 'merge or replace');
+  await tap('.choices .btn', '合并');
+  await until('window.__lensy.S.wish.some((w) => w.id === "Wevil")', 'merged');
+  await go('#wishitem/Wevil');
+  assert.ok(await js('!document.querySelector("a[href^=\\"javascript\\"]") && document.body.innerText.includes("javascript:window.__pwned=2")'), 'javascript: link shown as plain text');
+  await go('#me');
+  ph.nextFiles([path.join(tmp, 'good.json')]);
+  await tap('[data-act=restore]');
+  await until('document.querySelector(".choices")', 'merge or replace');
+  await tap('.choices .btn', '覆盖');
+  await until('[...document.querySelectorAll(".sheet-wrap")].some((s) => s.innerText.includes("确定覆盖"))', '覆盖 asks again');
+  await tap('[data-ok]');
+  await until('document.querySelector("#toast").textContent.includes("导入完成")', 'replaced');
+  assert.deepEqual(await counts(), [dumped.lenses.length, dumped.care.length, dumped.wish.length, dumped.wears.length]);
+  assert.equal(await S('S.settings.push && S.settings.push.on && S.settings.push.id'), pushId, 'this phone keeps its notifications after an import');
+  assert.ok(!(await js('!!window.__pwned')), 'nothing from a backup ran');
+  // Safety net (Content-Security-Policy in index.html): even HTML that slipped into the page can't run code.
+  const nErr = ph.errors.length;
+  await js('(() => { const d = document.createElement("div"); d.innerHTML = \'<img src="data:," onerror="window.__csp=1">\'; document.body.append(d); setTimeout(() => d.remove(), 300); })()');
+  await sleep(400);
+  assert.ok(!(await js('!!window.__csp')), 'inline code is blocked');
+  assert.ok(ph.errors.slice(nErr).some((x) => /Content Security Policy/i.test(x)), 'blocked by the CSP: ' + ph.errors.slice(nErr));
+  ph.errors.splice(nErr);
+  ok('backup import: edited file refused (data kept), javascript: link not clickable, 覆盖 confirms, push kept');
+
+  // 14. Double tap on 「今天戴这副」 takes 2 pieces once; 补记 hours: 1,5 → 1.5, -5 refused
+  const daily = await S('S.lenses.find((l) => l.cycle === "daily")');
+  const wears0 = await S('S.wears.length');
+  await go(`#lens/${daily.id}`);
+  await js('(() => { const b = document.querySelector("[data-act=wear][data-pair=\\"\\"]"); b.click(); b.click(); })()');
+  await until('window.__lensy.S.settings.wearing', 'wearing');
+  await sleep(200);
+  assert.ok(await js('!!document.querySelector("#view [data-act=wear-stop]") && !document.querySelector("#view [data-act=wear]")'), 'daily lens page shows 摘下 while it is worn');
+  await tap('[data-act=wear-stop]'); // lands where 「今天戴这副」 was, right after: still worn
+  await sleep(200);
+  assert.ok(await S('!!S.settings.wearing'), 'a tap straight after putting them on does not take them off');
+  assert.equal(await S(`S.lenses.find((l) => l.id === ${JSON.stringify(daily.id)}).qty`), daily.qty - 2, 'double tap took 2 pieces once');
+  assert.equal(await S('S.wears.length'), wears0 + 1, 'one wear logged');
+  assert.equal(await sheetCount(), 0);
+  await sleep(800);
+  await tap('[data-act=wear-stop]');
+  await until('!window.__lensy.S.settings.wearing', 'off');
+  await tap('[data-act=log-wear]');
+  await type('[name=hours]', '-5');
+  await tap('[data-ok]');
+  assert.equal(await sheetCount(), 1, 'negative hours refused');
+  await type('[name=hours]', '1,5');
+  await tap('[data-ok]');
+  await until('!document.querySelector(".sheet-wrap")', 'logged');
+  assert.equal(await S('S.wears[S.wears.length - 1].hours'), 1.5, '1,5 read as 1.5 hours');
+  ok('double tap wears once; 补记 hours checked');
 
   // 12. Dark mode look
   await ph.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });

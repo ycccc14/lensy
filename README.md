@@ -19,6 +19,7 @@
 - **只能上下滑**：不能左右滑、不能缩放、不显示滚动条；日期框等每个输入框都在自己的格子里。
 
 ## 说明
+- **备份安全**（v1.4.1）：导入前先整体检查文件（`js/backup.js`）。编号、日期、照片里有不该有的字符（被改过或已损坏的文件），会整份拒绝并说明是第几条，手机上的资料一点不动。导入在同一个事务里完成，中途出错也不会清掉现有资料。选「覆盖」会再确认一次。备份文件不含推送 id 和密钥；导入后，这台手机的通知保持开启。超过 24 小时的「正在佩戴」不会被带进来。只有 http/https 链接可以点，其他链接只显示成文字。`index.html` 的 Content-Security-Policy 只允许 Lensy 自己的脚本运行。
 - 内置参数是品牌系列的常见参考值，请以包装为准。
 - 小红书没有开放接口且禁止抓取，所以建议是在手机上自动生成的，真人上眼图通过一键搜索打开小红书查看。
 - 推送服务器第一次需要在 Apps Script 编辑器里运行一次 `setup` 并授权（https://script.google.com/d/1VLbB6Rr_vkXchlz7qb6EQ7h-7iHFqDXeJ5x9lv10C0tegQJEHTTAbdqt/edit）。服务器只保存每台手机的推送地址、接下来的提醒文字和一个密钥的哈希。
@@ -30,7 +31,7 @@ https://ycccc14.github.io/lensy/ （iPhone Safari 打开 → Share → Add to Ho
 ```
 .\deploy.ps1 "改了什么"     # 先跑全部测试，通过才发布到 GitHub Pages
 node test/server.js          # http://localhost:8790/
-node test/logic.test.js      # 提醒、推送时间表、货币、眼药水、品牌库、妆容建议、日历导出
+node test/logic.test.js      # 提醒、推送时间表、货币、眼药水、品牌库、妆容建议、日历导出、备份检查
 node test/push-server.test.js # 推送服务器（VAPID 签名、到点推送、收件箱）
 node test/ui-test.js         # iPhone 尺寸的无头 Chrome 实测，截图在 test/shots/
 node test/layout-test.js     # 320–430px 每个页面和弹窗：文字不出框、不横向滚动、不能缩放

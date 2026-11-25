@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { reminders, lensState, careEnd, buildIcs, stats, addDays, diffDays, pairEnd, pushSchedule, priceIn } from '../js/logic.js';
 import { colorsFor, specFor, cyclesFor, guessTone, BRANDS, CYCLES, TONES, CARE_TYPES, DROP_CYCLES, isDailyDrops, fixCare, convert } from '../js/catalog.js';
 import { suggest } from '../js/style.js';
+import { cleanBackup, mergeSettings, exportSettings } from '../js/backup.js';
+import { findBox, looksLikeScreenshot } from '../js/autocrop.js';
+import { cases as cropCases, near } from './autocrop.cases.js';
 
 let n = 0;
 const test = (name, fn) => { fn(); n++; console.log('  ✓', name); };
@@ -239,6 +242,76 @@ test('push schedule: exact times, future only, snooze respected', () => {
   const worn = pushSchedule({ lenses: [lens], care: [] }, { wearing: { lensId: 'l', pairId: 'p', start }, maxHours: 8 }, NOW);
   assert.ok(worn.find((x) => x.key === `wear:${start}` && x.at === new Date(start).getTime() + 8 * 3600000), 'take them off after 8 hours');
   assert.ok(!worn.find((x) => x.key.startsWith('soak:')), 'no solution reminders while they are in the eyes');
+});
+
+test('auto-crop: screenshots cut to the photo, black bars off, normal photos kept', () => {
+  assert.ok(looksLikeScreenshot(1170, 2532) && looksLikeScreenshot(750, 1334) && !looksLikeScreenshot(3024, 4032) && !looksLikeScreenshot(4032, 3024) && !looksLikeScreenshot(2160, 3840));
+  for (const c of cropCases()) {
+    const b = findBox(c.px, c.w, c.h);
+    assert.ok(near(b, c.expect), `${c.name}: got ${JSON.stringify(b)}, want ${JSON.stringify(c.expect)}`);
+  }
+});
+
+test('backup import: a good file passes, odd values are tidied', () => {
+  const good = {
+    app: 'lensy', version: 1,
+    lenses: [{ id: 'mhx1abcde', brand: 'Moody', color: '冷茶棕', cycle: 'monthly', tone: 'nope', qty: '4', price: 89, priceCur: 'XYZ', photos: [{ full: 'data:image/jpeg;base64,/9j/4AAQ==', thumb: 'data:image/jpeg;base64,/9j/', w: 2, kind: 'mine' }],
+      pairs: [{ id: 'p1', openedAt: T, soakAt: T, status: 'using', pieces: 2 }], inspo: [{ id: 'i1', url: 'javascript:alert(1)', note: 'x' }] }],
+    care: [{ id: 'c1', type: 'single', name: '海露', qty: '' }, { id: 'c2', type: 'weird', name: 'x' }],
+    wish: [{ id: 'w1', brand: 'OLENS', priority: 99, link: 'https://shopee.com.my/x' }],
+    wears: [{ id: 'we1', lensId: 'mhx1abcde', pairId: 'p1', date: T, start: '2026-11-12T01:00:00.000Z', end: '2026-11-12T09:00:00.000Z', hours: 8 }],
+    learned: [{ id: 'moody|冷茶棕|monthly', brand: 'Moody', color: '冷茶棕', cycle: 'monthly' }],
+    kv: [{ id: 'settings', value: { maxHours: 10, currency: 'CNY', remindAt: '21:00', push: { id: 'pX', secret: 'S' }, lastBackup: '<img src=x onerror=alert(1)>', snooze: { a: '9999-12-31', b: '"><svg>' } } }],
+  };
+  const c = cleanBackup(good);
+  assert.deepEqual(c.counts, { lenses: 1, care: 2, wish: 1, wears: 1 });
+  const l = c.lenses[0];
+  assert.equal(l.qty, 4, 'numeric text becomes a number');
+  assert.equal(l.tone, '', 'unknown colour family dropped');
+  assert.equal(l.priceCur, 'MYR');
+  assert.equal(l.inspo[0].url, 'javascript:alert(1)', 'kept as text (the page shows it as plain text, not a link)');
+  assert.equal(c.care[0].type, 'single'); assert.equal(c.care[1].type, 'other');
+  assert.equal(c.wish[0].priority, 3);
+  assert.deepEqual(c.settings, { maxHours: 10, currency: 'CNY', remindAt: '21:00', snooze: { a: '9999-12-31' } }, 'push secret and bad values never come from a file');
+});
+
+test('backup import: edited or damaged files are refused before anything is written', () => {
+  const base = () => ({ app: 'lensy', lenses: [{ id: 'L1', brand: 'B', color: 'C', cycle: 'daily', qty: 2 }], wears: [{ id: 'w1', lensId: 'L1', date: T }] });
+  const refused = (mutate, why) => { const d = base(); mutate(d); assert.throws(() => cleanBackup(d), Error, why); };
+  assert.doesNotThrow(() => cleanBackup(base()));
+  refused((d) => { d.app = 'other'; }, 'not a Lensy file');
+  refused((d) => { d.lenses = { L1: {} }; }, 'store is not a list');
+  refused((d) => { delete d.lenses[0].id; }, 'record without id');
+  refused((d) => { d.lenses[0].id = 'x" onfocus="alert(1)" autofocus="'; }, 'id with quotes (script injection)');
+  refused((d) => { d.wears[0].lensId = '"><img src=x onerror=alert(1)>'; }, 'reference id with HTML');
+  refused((d) => { d.wears[0].date = '2026-11-12"><b>'; }, 'date with HTML');
+  refused((d) => { d.wears[0].start = 'yesterday" onmouseover="x'; }, 'start time with HTML');
+  refused((d) => { d.lenses[0].photos = [{ full: 'x" onerror="alert(1)' }]; }, 'photo that is not a picture');
+  refused((d) => { d.lenses[0].photos = [{ full: 'https://evil.example/track.png' }]; }, 'photo from the internet');
+  refused((d) => { d.lenses[0].pairs = [{ id: 'p1', openedAt: T, endAt: '<svg>' }]; }, 'pair date with HTML');
+  refused((d) => { d.lenses[0].inspo = [{ img: 'javascript:alert(1)' }]; }, 'inspiration picture that is not a picture');
+  refused((d) => { d.lenses[0].cycle = 'forever'; }, 'unknown cycle (detail page would break)');
+  refused((d) => { d.lenses.push({ ...d.lenses[0] }); }, 'same id twice');
+  refused((d) => { d.lenses = new Array(20001).fill(d.lenses[0]); }, 'too many records');
+  assert.match((() => { try { const d = base(); d.lenses[0].id = 'a b'; cleanBackup(d); } catch (e) { return e.message; } return ''; })(), /第 1 条美瞳/, 'says which record');
+});
+
+test('backup import: push registration stays with the phone, old 正在佩戴 is dropped', () => {
+  const now = NOW.getTime();
+  const clean = cleanBackup({ app: 'lensy', lenses: [{ id: 'L1', brand: 'B', cycle: 'daily' }], wears: [{ id: 'w1', lensId: 'L1', date: T }],
+    kv: [{ id: 'settings', value: { soakDays: 5, wearing: { lensId: 'L1', wearId: 'w1', start: new Date(now - 2 * 3600000).toISOString() } } }] });
+  const here = { soakDays: 3, maxHours: 9, push: { id: 'pMine', secret: 'mine', on: true }, wearing: null };
+  const rep = mergeSettings(here, clean, 'replace', now);
+  assert.deepEqual(rep.push, here.push, 'this phone keeps its own push registration');
+  assert.equal(rep.soakDays, 5); assert.equal(rep.maxHours, undefined, 'replace starts from the file');
+  assert.equal(rep.wearing.wearId, 'w1', 'a wear started 2 hours ago comes along');
+  const mer = mergeSettings(here, clean, 'merge', now);
+  assert.equal(mer.maxHours, 9, 'merge keeps this phone\'s other settings');
+  const old = mergeSettings(here, clean, 'replace', now + 3 * 86400000);
+  assert.equal(old.wearing, null, 'a 3-day-old 正在佩戴 is not brought back');
+  const noFile = mergeSettings(here, cleanBackup({ app: 'lensy' }), 'merge', now);
+  assert.deepEqual(noFile.push, here.push);
+  assert.equal(exportSettings({ a: 1, push: { id: 'p', secret: 's' } }).push, null, 'backup files never carry the secret');
 });
 
 console.log(`\n${n} logic tests passed`);

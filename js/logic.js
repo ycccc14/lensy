@@ -28,6 +28,18 @@ export const DEFAULT_SETTINGS = {
   lastBackup: null,
 };
 
+// Hours typed by the user: 「1,5」 (comma from a Chinese keyboard) means 1.5; a wear lasts 0–24 hours.
+// Empty → 0. Anything else → null (the form says what to type).
+export function parseHours(v) {
+  const raw = String(v == null ? '' : v).trim().replace(/[,，。]/g, '.');
+  const h = raw === '' ? 0 : Number(raw);
+  return Number.isFinite(h) && h >= 0 && h <= 24 ? Math.round(h * 10) / 10 : null;
+}
+// 「摘下」 tapped this long after 「戴上」 means the user forgot to tap it when they really took the lenses
+// off (nobody wears them 16+ hours, let alone two days): the app asks how long instead of logging 40 hours.
+export const forgotHours = (maxHours) => Math.max(16, (Number(maxHours) || 8) * 1.5);
+export const forgotToStop = (start, now, maxHours) => ((now || new Date()) - new Date(start)) / 3600000 > forgotHours(maxHours);
+
 export const isLong = (cycle) => cycle !== 'daily';
 export const cycleDays = (cycle) => (CYCLES[cycle] ? CYCLES[cycle].days : 30);
 export const lensName = (l) => (l.color && l.brand ? `${l.color} · ${l.brand}` : l.color || l.brand || '未命名');
@@ -149,7 +161,8 @@ export function stats(data, now, cur) {
   const topId = Object.keys(byLens).sort((a, b) => byLens[b] - byLens[a])[0];
   const tones = {};
   for (const w of wears) { const l = lenses.find((x) => x.id === w.lensId); if (l) tones[l.tone || 'brown'] = (tones[l.tone || 'brown'] || 0) + 1; }
-  const hours = wears.filter((w) => w.hours).map((w) => w.hours);
+  // Only real wear lengths: older versions could log 40+ hours when 「摘下」 was tapped days later.
+  const hours = wears.map((w) => Number(w.hours)).filter((h) => h > 0 && h <= 24);
   return {
     monthDays,
     totalWears: wears.length,

@@ -391,8 +391,14 @@ try {
       return real(url, opts);
     };
   })()`);
+  // Before 「开启」 the page says what goes to the server; 关于与声明 is at the bottom of 我的.
+  const meText = await js('document.querySelector("#view").innerText');
+  assert.ok(meText.includes('会存到 Lensy 推送服务器') && meText.includes('点「开启」即表示同意'), 'push note shown before 开启');
+  assert.ok(['关于与声明', '不是医疗建议', '验光师', '参数仅供参考', '汇率仅供参考', '品牌与商标'].every((x) => meText.includes(x)), '关于与声明 on 我的');
+  await full('10b-me-about');
   await tap('[data-act=notify]');
   await until('window.__lensy.S.settings.push && window.__lensy.S.settings.push.on', 'push on', 8000);
+  assert.ok(!(await js('!!document.querySelector("#view .consent")')), 'the note goes away once push is on');
   const calls = await js('window.__pushCalls');
   const sync = calls.find((c) => c.fn === 'sync');
   assert.ok(sync && sync.endpoint === 'https://web.push.apple.com/fake' && sync.items.length > 0 && sync.id && sync.secret, 'schedule sent with endpoint');
@@ -482,11 +488,55 @@ try {
   assert.equal(await S('S.wears[S.wears.length - 1].hours'), 1.5, '1,5 read as 1.5 hours');
   ok('double tap wears once; 补记 hours checked');
 
+  // 15. Forgot to tap 摘下: put on two days ago → the home card says so; 摘下 asks how long instead of logging 40+ hours
+  await go(`#lens/${daily.id}`);
+  await tap('[data-act=wear][data-pair=""]');
+  await until('window.__lensy.S.settings.wearing', 'wearing again');
+  const ago = new Date(Date.now() - 41 * 3600000).toISOString();
+  await js(`(async () => { const L = window.__lensy; const w = L.S.settings.wearing; w.start = ${JSON.stringify(ago)}; L.S.wears.find((x) => x.id === w.wearId).start = ${JSON.stringify(ago)}; L.render(); })()`);
+  await go('#home');
+  assert.ok((await js('document.querySelector(".card.wearing").innerText')).includes('可能忘了点摘下'), 'home card hints at a forgotten 摘下');
+  await tap('.card.wearing [data-act=wear-stop]');
+  await until('[...document.querySelectorAll(".sheet-wrap")].some((s) => s.innerText.includes("好像忘了点摘下"))', 'asks how long');
+  assert.equal(await formVal('hours'), String(await S('S.settings.maxHours')), 'suggests the daily maximum');
+  await shot('12-forgot');
+  await tap('.sheet-wrap [data-close]');
+  await until('!document.querySelector(".sheet-wrap")', 'closed');
+  assert.ok(await S('!!S.settings.wearing'), 'closing the question keeps them on');
+  await sleep(300);
+  await tap('.card.wearing [data-act=wear-stop]');
+  await until('document.querySelector(".sheet-wrap [name=hours]")', 'asks again');
+  await type('[name=hours]', '30');
+  await tap('[data-ok]');
+  assert.equal(await sheetCount(), 1, 'more than 24 hours refused');
+  await type('[name=hours]', '6,5');
+  await tap('[data-ok]');
+  await until('!window.__lensy.S.settings.wearing', 'taken off');
+  const fw = await S('S.wears.find((x) => x.start === ' + JSON.stringify(ago) + ')');
+  assert.equal(fw.hours, 6.5, 'logged as 6.5 hours, not 41');
+  assert.ok(fw.guessed && new Date(fw.end) - new Date(fw.start) === 6.5 * 3600000, 'end time filled in from the answer');
+  ok('forgot to tap 摘下: home card says so, 摘下 asks how long, 0–24 checked');
+
   // 12. Dark mode look
   await ph.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
   await go('#home');
   await full('11-home-dark');
   await ph.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+
+  // 16. 清空 also turns notifications off and deletes this phone's reminders on the push server
+  await go('#me');
+  const offBefore = (await js('window.__pushCalls')).filter((c) => c.fn === 'off').length;
+  await tap('[data-act=wipe]');
+  await until('[...document.querySelectorAll(".sheet-wrap")].some((s) => s.innerText.includes("清空所有资料"))', 'first confirm');
+  await tap('[data-ok]');
+  await until('[...document.querySelectorAll(".sheet-wrap")].some((s) => s.innerText.includes("再确认一次"))', 'second confirm');
+  await tap('[data-ok]');
+  await until('document.querySelector("#toast").textContent.includes("已清空")', 'wiped');
+  assert.equal((await js('window.__pushCalls')).filter((c) => c.fn === 'off').length, offBefore + 1, 'push server told to forget this phone');
+  assert.equal(await S('S.settings.push'), null);
+  assert.equal(await S('S.lenses.length + S.wears.length'), 0);
+  assert.ok(!(await js('caches.open("lensy-push").then((c) => c.match("push-config")).then((r) => !!r)')), 'service worker no longer has the id + secret');
+  ok('清空 also deletes the reminders on the push server');
 
   assert.equal(await sheetCount(), 0);
   assert.deepEqual(ph.errors, [], 'no page errors');

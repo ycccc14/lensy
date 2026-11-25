@@ -1,6 +1,6 @@
 // node test/logic.test.js — reminders, catalogue autofill, style suggestions, calendar export.
 import assert from 'node:assert/strict';
-import { reminders, lensState, careEnd, buildIcs, stats, addDays, diffDays, pairEnd, pushSchedule, priceIn } from '../js/logic.js';
+import { reminders, lensState, careEnd, buildIcs, stats, addDays, diffDays, pairEnd, pushSchedule, priceIn, parseHours, forgotToStop, forgotHours } from '../js/logic.js';
 import { colorsFor, specFor, cyclesFor, guessTone, BRANDS, CYCLES, TONES, CARE_TYPES, DROP_CYCLES, isDailyDrops, fixCare, convert } from '../js/catalog.js';
 import { suggest } from '../js/style.js';
 import { cleanBackup, mergeSettings, exportSettings } from '../js/backup.js';
@@ -113,6 +113,25 @@ test('stats', () => {
   assert.equal(Math.round(st.perWear * 100), 3333);
   assert.equal(st.avgHours, 7);
   assert.equal(st.tones.grey, 3);
+  const old = stats({ lenses: [{ id: 'a' }], wears: [{ lensId: 'a', date: T, hours: 6 }, { lensId: 'a', date: T, hours: 47.5 }, { lensId: 'a', date: T, hours: -5 }, { lensId: 'a', date: T, hours: 8 }] }, NOW);
+  assert.equal(old.avgHours, 7, 'a 47.5-hour (forgot 摘下) or negative record does not count in the average');
+  assert.equal(old.totalWears, 4, 'but it still counts as a wear');
+});
+
+test('forgot to tap 摘下: hours typed, long wears detected', () => {
+  assert.equal(parseHours('7.5'), 7.5);
+  assert.equal(parseHours('1,5'), 1.5);
+  assert.equal(parseHours('6，5'), 6.5);
+  assert.equal(parseHours(''), 0);
+  assert.equal(parseHours(' 8 '), 8);
+  assert.equal(parseHours('-5'), null);
+  assert.equal(parseHours('25'), null);
+  assert.equal(parseHours('abc'), null);
+  const start = new Date(NOW.getTime() - 10 * 3600000).toISOString();
+  assert.equal(forgotToStop(start, NOW, 8), false, '10 hours is a long day, not a forgotten 摘下');
+  assert.equal(forgotToStop(new Date(NOW.getTime() - 17 * 3600000).toISOString(), NOW, 8), true, '17 hours');
+  assert.equal(forgotToStop(new Date(NOW.getTime() - 48 * 3600000).toISOString(), NOW, 8), true, 'Monday → Wednesday');
+  assert.equal(forgotHours(14), 21, 'a higher daily maximum moves the line');
 });
 
 test('calendar export', () => {

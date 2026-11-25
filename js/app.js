@@ -1,13 +1,13 @@
 // Lensy — contact lens tracker. Screens, forms and actions.
 import * as DB from './db.js';
 import { BRANDS, CYCLES, CYCLE_KEYS, TONES, TONE_KEYS, CARE_TYPES, DROP_CYCLES, CURRENCIES, CUR_KEYS, curOf, convert, isDailyDrops, fixCare, findBrand, colorsFor, specFor, cyclesFor, guessTone } from './catalog.js';
-import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn } from './logic.js';
+import { DEFAULT_SETTINGS, today, addDays, diffDays, uid, isLong, cycleDays, lensName, activePairs, pairEnd, lensState, lastSoak, dueLabel, reminders, careEnd, stats, buildIcs, gcalLink, parseDate, pushSchedule, priceIn, parseHours, forgotToStop } from './logic.js';
 import { suggest, xhsApp } from './style.js';
 import { openViewer } from './viewer.js';
 import { cropBox } from './autocrop.js';
 import { cleanBackup } from './backup.js';
 
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 // Lensy Push server (server/Code.gs, Google Apps Script): sends reminders while the app is closed.
 const PUSH_API = 'https://script.google.com/macros/s/AKfycbz1QL4_ebLslhwKmMIM-nitPbaG-_PUaUEKzP7_bKw1SWa488V5TVDLuU15v0cHn0w8/exec';
 const S = { lenses: [], care: [], wish: [], wears: [], learned: [], settings: { ...DEFAULT_SETTINGS } };
@@ -31,6 +31,8 @@ const priceText = (x) => {
 const curSelect = (val) => `<select name="priceCur" class="cur">${CUR_KEYS.map((k) => `<option value="${k}" ${curOf(val) === k ? 'selected' : ''}>${k}</option>`).join('')}</select>`;
 const priceField = (f, label) => field(label || '价格', `<div class="money-in">${input('price', f.price, 'inputmode="decimal" placeholder="总价"')}${curSelect(f.priceCur)}</div>`, '1 CNY = 0.6 MYR，1 AUD = 2.8 MYR');
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+// What leaves the phone when notifications are on (shown before 「开启」 and in 关于与声明).
+const PUSH_NOTE = '开启「手机通知」后，接下来的提醒时间和提醒文字（含美瞳款式名）会存到 Lensy 推送服务器（Google Apps Script），用来在 App 关着时提醒你；度数、照片和价格不会上传。关闭通知或清空资料会删除服务器上的记录。';
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const toneHex = (t) => (TONES[t] || TONES.brown).hex;
 const iris = (tone, cls) => `<i class="iris ${cls || ''}" style="--c:${toneHex(tone)}"></i>`;
@@ -315,9 +317,10 @@ function wearCard() {
       const start = new Date(w.start);
       const off = new Date(start.getTime() + S.settings.maxHours * 3600000);
       const frac = (Date.now() - start) / (S.settings.maxHours * 3600000);
+      const forgot = forgotToStop(w.start, new Date(), S.settings.maxHours);
       return `<section class="card wearing">
         <div class="row">${thumbOf(l, 'md')}<div class="grow"><div class="label">正在佩戴</div><b>${esc(l.color || l.brand || '')}</b>${l.color && l.brand ? `<div class="sm">${esc(l.brand)}</div>` : ''}
-        <div class="muted">已戴 <span data-since="${w.start}">${dur(Date.now() - start)}</span> · 建议 ${hm(off)} 前摘下</div></div></div>
+        <div class="muted">已戴 <span data-since="${esc(w.start)}">${dur(Date.now() - start)}</span> · ${forgot ? '可能忘了点摘下？点「摘下」补填实际时长' : `建议 ${hm(off)} 前摘下`}</div></div></div>
         ${bar(frac, frac >= 1 ? 'red' : frac > 0.8 ? 'amber' : '')}
         <div class="btns"><button class="btn primary" data-act="wear-stop">摘下 👋</button><a class="btn ghost" href="#lens/${l.id}">详情</a></div></section>`;
     }
@@ -514,7 +517,7 @@ function LensDetail(id) {
   <div class="lhead"><h1>${esc(l.color || l.brand || '')}</h1>${l.color && l.brand ? `<div class="lcolor">${iris(l.tone)}${esc(l.brand)}</div>` : ''}
   <div class="tags"><span class="tag">${CYCLES[l.cycle].label}</span><span class="tag">${TONES[l.tone] ? TONES[l.tone].label : ''}</span><span class="tag st-${st}">${stLabel}</span>${l.series ? `<span class="tag">${esc(l.series)}</span>` : ''}</div></div>
   ${pairCards}${stock}
-  <section class="card"><h3>产品资料</h3><div class="specs">
+  <section class="card"><h3>产品资料 <small>参数以包装为准</small></h3><div class="specs">
     ${spec('直径', l.dia, 'mm')}${spec('着色直径', l.gdia, 'mm')}${spec('基弧', l.bc, 'mm')}${spec('含水量', l.water, '%')}
     ${spec('度数 左', l.powerL)}${spec('度数 右', l.powerR)}${spec('有效期', l.expiry)}${spec('购买日期', l.buyDate)}
     ${spec('价格', priceText(l))}${spec('购买渠道', l.shop)}${long ? spec('换水间隔', `${Number(l.soakDays) || S.settings.soakDays} 天`) : ''}${spec('买入片数', l.boughtQty)}
@@ -562,7 +565,7 @@ function WishDetail(id) {
   ${photos}
   <div class="lhead"><h1>${esc(w.color || w.brand || '未选品牌')}</h1>${w.color && w.brand ? `<div class="lcolor">${iris(w.tone)}${esc(w.brand)}</div>` : ''}
   <div class="tags">${w.cycle && CYCLES[w.cycle] ? `<span class="tag">${CYCLES[w.cycle].label}</span>` : ''}${TONES[w.tone] ? `<span class="tag">${TONES[w.tone].label}</span>` : ''}${w.series ? `<span class="tag">${esc(w.series)}</span>` : ''}${w.priority ? `<span class="tag pink">${'♥'.repeat(w.priority)}</span>` : ''}</div></div>
-  <section class="card"><h3>资料</h3><div class="specs">
+  <section class="card"><h3>资料${sp && sp.from !== 'none' ? ' <small>参数以包装为准</small>' : ''}</h3><div class="specs">
     ${spec('价格', priceText(w), 'full')}${spec('在哪买', w.shop, 'full')}
     ${sp && sp.from !== 'none' ? spec('直径', mm(sp.dia)) + spec('着色直径', mm(sp.gdia)) + spec('基弧', mm(sp.bc)) + spec('含水量', sp.water ? sp.water + '%' : '') : ''}
   </div>${w.link ? `<p class="note">🔗 ${linkTo(w.link)}</p>` : ''}${w.notes ? `<p class="note">📝 ${esc(w.notes)}</p>` : ''}
@@ -587,11 +590,12 @@ function Me() {
     <label class="srow"><span>右眼 R</span>${powerSelect('powerR', s.powerR, 'data-set="powerR"')}</label>
     <p class="muted sm">新录入美瞳时会自动带入这个度数。</p></section>
   <h2 class="sec">提醒设置</h2><section class="card">
-    ${num('warnDays', '到期前提醒', '天', 1, 60)}${num('soakDays', '换护理液间隔', '天', 1, 30)}${num('maxHours', '每天最长佩戴', '小时', 1, 24)}
+    ${num('warnDays', '到期前提醒', '天', 1, 60)}${num('soakDays', '换护理液间隔', '天', 1, 30)}${num('maxHours', '每天最长佩戴<small>按验光师的建议设置</small>', '小时', 1, 24)}
     ${num('lowStock', '日抛库存少于', '片提醒', 0, 60)}${num('expiryWarn', '产品有效期前', '天提醒', 1, 365)}${num('careWarn', '护理品到期前', '天提醒', 1, 60)}</section>
   <h2 class="sec">通知 & 日历</h2><section class="card">
     <div class="srow"><span>手机通知<small>${pushSub}</small></span>
       <button class="btn sm ${pushOn ? 'soft' : 'primary'}" data-act="notify">${pushOn ? '已开启' : '开启'}</button></div>
+    ${pushOn || !canPush ? '' : `<p class="muted sm consent">${PUSH_NOTE}点「开启」即表示同意。</p>`}
     ${pushOn ? `<label class="srow"><span>每天提醒时间<small>到期日、换水日在这个时间推送</small></span><input type="time" data-set="remindAt" value="${esc(s.remindAt || '09:00')}" class="time"></label>
     <div class="srow"><span>测试一下<small>马上发一条通知到这台手机</small></span><button class="btn sm soft" data-act="push-test">发送测试</button></div>` : ''}
     <div class="srow"><span>加入手机日历<small>也可以把到期日、换水日导出到手机日历</small></span><button class="btn sm ghost" data-act="ics">导出</button></div></section>
@@ -602,7 +606,13 @@ function Me() {
     <label class="srow"><span>总花费显示为<small>录入价格时可选 MYR / CNY / AUD；1 CNY = 0.6 MYR，1 AUD = 2.8 MYR</small></span><select data-set="currency" class="cur">${CUR_KEYS.map((k) => `<option value="${k}" ${dispCur() === k ? 'selected' : ''}>${CURRENCIES[k].name}</option>`).join('')}</select></label>
     <div class="srow"><span>品牌资料库<small>内置 ${BRANDS.length} 个品牌；你录入的新品牌/花色已记住 ${S.learned.length} 条</small></span></div>
     <p class="muted sm">只有核对过品牌官网的款式（ACUVUE DEFINE、FreshKon）会自动填参数，其他款式不再填“参考值”以免填错。照包装或售卖页填写一次，下次同款就会自动填好。</p>
-    <p class="muted sm">Lensy v${VERSION}</p></section>`;
+    <p class="muted sm">Lensy v${VERSION}</p></section>
+  <h2 class="sec">关于与声明</h2><section class="card about">
+    <p><b>不是医疗建议</b>Lensy 只是个人记录和提醒工具，不提供医疗建议，不能代替验光师或眼科医生的意见。眼睛出现红肿、疼痛或视力下降，请立即摘下并就医。</p>
+    <p><b>参数仅供参考</b>直径、基弧、含水量等参数请以包装和品牌官方资料为准。</p>
+    <p><b>汇率仅供参考</b>1 CNY = 0.6 MYR、1 AUD = 2.8 MYR 是固定估算，不是实时汇率。</p>
+    <p><b>品牌与商标</b>App 里的品牌名和花色名属于各自的权利人。Lensy 与这些品牌和小红书都没有合作或关联。</p>
+    <p><b>你的资料</b>美瞳、照片、度数等资料只存在这台手机上，Lensy 没有账号，也不收集资料。${PUSH_NOTE}导出的备份文件里有你的照片和度数，请不要发到公开群里。</p></section>`;
 }
 
 function Stats(month) {
@@ -999,15 +1009,49 @@ async function startWearNow(lensId, pairId) {
   render();
 }
 
+const HOURS_HINT = '戴了多久请填 0～24 之间的小时数，例如 6 或 7.5';
+
+// 「摘下」 tapped many hours after 「戴上」 (the user forgot to tap it): ask how long they really wore them,
+// instead of logging 40 hours. Resolves to the hours, or null when the sheet is closed.
+function askWornHours(start) {
+  return new Promise((resolve) => {
+    let answered = false;
+    const s = new Date(start);
+    const since = Math.floor((Date.now() - s) / 3600000);
+    const sh = sheet('好像忘了点摘下', `<p class="ask">${esc(`${fmtCN(today(s))} ${hm(s)} 戴上，到现在已经 ${since} 小时了，可能摘下时忘了点。实际戴了多久？`)}</p>
+      ${field('戴了多久（小时）', input('hours', S.settings.maxHours, 'inputmode="decimal" class="short"'), '统计按这个时长算')}`, {
+      cls: 'small',
+      foot: '<button class="btn ghost" data-close>取消</button><button class="btn primary" data-ok>记下并摘下</button>',
+      onClose: () => { if (!answered) resolve(null); },
+    });
+    $('[data-ok]', sh.el).onclick = () => {
+      const h = parseHours($('[name="hours"]', sh.el).value);
+      if (h == null) { toast(HOURS_HINT); return; }
+      answered = true;
+      resolve(h);
+      sh.close();
+    };
+  });
+}
+
 async function stopWear(quiet) {
   const cur = S.settings.wearing;
   if (!cur) return;
   const w = S.wears.find((x) => x.id === cur.wearId);
-  if (w) { w.end = new Date().toISOString(); w.hours = Math.round(((new Date(w.end) - new Date(w.start)) / 3600000) * 10) / 10; await save('wears', w); }
+  let end = new Date();
+  if (w && w.start && forgotToStop(w.start, end, S.settings.maxHours)) {
+    let h = await askWornHours(w.start);
+    if (S.settings.wearing !== cur) return; // already taken off meanwhile
+    // Closed without an answer: keep wearing — or, when switching to another pair, assume the usual day.
+    if (h == null) { if (!quiet) return; h = Number(S.settings.maxHours) || 8; }
+    end = new Date(new Date(w.start).getTime() + h * 3600000);
+    w.guessed = true; // the end time was filled in afterwards
+  }
+  if (w) { w.end = end.toISOString(); w.hours = Math.round(((end - new Date(w.start)) / 3600000) * 10) / 10; await save('wears', w); }
   const l = lensById(cur.lensId);
   if (l && cur.pairId) {
     const p = (l.pairs || []).find((x) => x.id === cur.pairId);
-    if (p) { p.lastWorn = today(); p.soakAt = today(); await save('lenses', l); }
+    if (p) { p.lastWorn = today(end); p.soakAt = today(end); await save('lenses', l); }
   }
   S.settings.wearing = null;
   await saveSettings();
@@ -1131,11 +1175,9 @@ const ACTS = {
     $('[data-ok]', sh.el).onclick = async () => {
       const f = {};
       syncForm(sh.el, f);
-      // 「1,5」 (comma from a Chinese keyboard) means 1.5; a wear lasts 0–24 hours.
-      const raw = String(f.hours || '').trim().replace(/[,，。]/g, '.');
-      const hours = raw === '' ? 0 : Number(raw);
-      if (!Number.isFinite(hours) || hours < 0 || hours > 24) { toast('戴了多久请填 0～24 之间的小时数，例如 6 或 7.5'); return; }
-      const w = { id: uid(), lensId: l.id, date: f.date || today(), hours: Math.round(hours * 10) / 10 };
+      const hours = parseHours(f.hours); // 「1,5」 means 1.5; a wear lasts 0–24 hours
+      if (hours == null) { toast(HOURS_HINT); return; }
+      const w = { id: uid(), lensId: l.id, date: f.date || today(), hours };
       if (f.pair) { w.pairId = f.pair; const p = ps.find((x) => x.id === f.pair); if (p && (!p.lastWorn || p.lastWorn < w.date)) p.lastWorn = w.date; }
       if (f.take && !isLong(l.cycle)) { const take = Math.min(Number(l.perWear) || 2, l.qty || 0); l.qty -= take; w.pieces = take; }
       l.wearCount = (l.wearCount || 0) + 1;
@@ -1280,6 +1322,8 @@ const ACTS = {
   wipe: async () => {
     if (!(await ask('清空所有资料', '会删除所有美瞳、护理品、心愿和佩戴记录，不能恢复。建议先导出备份。', '全部清空', true))) return;
     if (!(await ask('再确认一次', '真的要清空吗？', '清空', true))) return;
+    // Also delete this phone's reminders on the push server, or it would keep pushing the deleted lenses.
+    if (S.settings.push) await pushOff();
     await DB.wipe();
     await load();
     toast('已清空');
